@@ -1,0 +1,143 @@
+name: Build OrangeFox recovery (kansas)
+
+# Uses OrangeFox's own orangefox_sync.sh (gitlab.com/OrangeFox/sync) to
+# fetch and patch the fox_14.1 build system, rather than a hand-rolled
+# `repo init`. fox_14.1 is the newest actively-maintained OrangeFox
+# branch (core recovery source last touched ~1 month ago at the time
+# this was written) and is the one that carries the AIDL Weaver /
+# wrappedkey vold patches relevant to this device's FBE setup. It is
+# still labelled EXPERIMENTAL upstream — expect friction.
+
+on:
+  workflow_dispatch:
+    inputs:
+      fox_branch:
+        description: "OrangeFox manifest branch passed to orangefox_sync.sh --branch"
+        default: "14.1"
+        required: false
+      build_target:
+        description: "Make target. kansas has no recovery partition and a separate init_boot (confirmed on-device) — the recovery ramdisk packs into init_boot.img, so bootimage is correct here, NOT recoveryimage."
+        default: "bootimage"
+        required: false
+  push:
+    branches: [ "main" ]
+    paths:
+      - "device/motorola/kansas/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 300
+    steps:
+      # orangefox_sync.sh's own README says the sync can use 40-80GB of
+      # disk — a stock GitHub-hosted runner has ~14GB free even after
+      # the cleanup step below. If this job fails with ENOSPC, switch
+      # to a larger runner or add a disk-expanding action here before
+      # anything else.
+      - name: Free up runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          sudo apt-get clean
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            git git-lfs gnupg flex bison build-essential zip curl patch \
+            zlib1g-dev libc6-dev-i386 libncurses5 lib32ncurses5-dev \
+            x11proto-core-dev libx11-dev lib32z1-dev libgl1-mesa-dev \
+            libxml2-utils xsltproc unzip fontconfig python3 python-is-python3 \
+            bc kmod cpio ccache
+
+      - name: Install repo tool
+        run: |
+          mkdir -p ~/bin
+          curl -s https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+          chmod a+x ~/bin/repo
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
+          git config --global color.ui false
+
+      - name: Checkout device tree (this repo)
+        uses: actions/checkout@v4
+        with:
+          path: device-tree-src
+          fetch-depth: 1
+
+      - name: Verify prebuilt kernel blob is present
+        run: |
+          # BoardConfig.mk is set to Mode A (TARGET_PREBUILT_KERNEL), so no
+          # kernel source checkout/build happens here — the tree must carry
+          # device/motorola/kansas/prebuilt/Image.lz4 (and dtbo.img)
+          # committed to this repo already. Checked before the (very long,
+          # per OrangeFox's own README) sync below so a missing blob fails
+          # in seconds, not an hour-plus.
+          test -f device-tree-src/device/motorola/kansas/prebuilt/Image.lz4 || \
+            { echo "::error::Missing device/motorola/kansas/prebuilt/Image.lz4 — extract it from boot_a with unpack_bootimg.py and commit it before building."; exit 1; }
+
+      - name: Fetch OrangeFox sync tool
+        run: |
+          git clone --depth=1 https://gitlab.com/OrangeFox/sync.git ~/OrangeFox_sync
+
+      - name: Sync and patch the OrangeFox fox_14.1 build system
+        run: |
+          cd ~/OrangeFox_sync
+          ./orangefox_sync.sh --branch "${{ github.event.inputs.fox_branch || '14.1' }}" --path "$HOME/fox_14.1"
+
+      - name: Place device tree
+        run: |
+          rm -rf "$HOME/fox_14.1/device/motorola/kansas"
+          mkdir -p "$HOME/fox_14.1/device/motorola"
+          cp -r device-tree-src/device/motorola/kansas "$HOME/fox_14.1/device/motorola/kansas"
+
+      - name: Set up ccache
+        run: |
+          echo "USE_CCACHE=1" >> "$GITHUB_ENV"
+          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+
+      - name: Cache ccache directory
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-kansas-fox-${{ github.sha }}
+          restore-keys: |
+            ccache-kansas-fox-
+
+      - name: Build recovery
+        working-directory: /home/runner/fox_14.1
+        run: |
+          set -e
+          export ALLOW_MISSING_DEPENDENCIES=true
+          source build/envsetup.sh
+          lunch twrp_kansas-eng
+          mka ${{ github.event.inputs.build_target || 'bootimage' }} -j"$(nproc)"
+
+      - name: Collect output artifact
+        working-directory: /home/runner/fox_14.1
+        run: |
+          mkdir -p /home/runner/out-artifact
+          # init_boot.img is the one that actually carries the recovery
+          # ramdisk on this device (confirmed: boot_a's ramdisk_size=0,
+          # separate init_boot_a/b partitions exist). boot.img/recovery.img/
+          # OrangeFox's flashable *.zip are collected too in case the
+          # target list changes later.
+          find out/target/product/kansas -maxdepth 1 \
+            \( -name "init_boot.img" -o -name "recovery.img" -o -name "boot.img" -o -name "*.zip" \) \
+            -exec cp {} /home/runner/out-artifact/ \;
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kansas-orangefox-${{ github.run_number }}
+          path: /home/runner/out-artifact/*
+          if-no-files-found: error
+          retention-days: 14

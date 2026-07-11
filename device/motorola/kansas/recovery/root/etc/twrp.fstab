@@ -1,0 +1,43 @@
+# twrp.fstab for kansas
+#
+# Block device paths and mount flags below are transcribed from the
+# live device's /vendor/etc/fstab.mt6835 and from
+# `su -c ls -la /dev/block/by-name/` on a real "kansas" unit — not
+# guessed. Re-check after any OTA in case Motorola reshuffles by-name
+# entries (has happened across MTK security-patch updates before).
+#
+# <Mount Point>   <Fstype>  <Device>                          <Flags>
+
+# Dynamic (super) partitions — resolved through device-mapper, not a
+# raw by-name symlink. Confirmed via `su -c lpdump`: group "main",
+# slot-suffixed main_a/main_b, members product/system/system_dlkm/
+# system_ext/vendor/vendor_dlkm.
+/system         ext4    /dev/block/mapper/system         flags=logical;slotselect;display="System"
+/vendor         ext4    /dev/block/mapper/vendor         flags=logical;slotselect;display="Vendor"
+/product        ext4    /dev/block/mapper/product        flags=logical;slotselect;display="Product"
+/system_ext     ext4    /dev/block/mapper/system_ext     flags=logical;slotselect;display="System_ext"
+/vendor_dlkm    ext4    /dev/block/mapper/vendor_dlkm    flags=logical;slotselect;display="Vendor_dlkm"
+/system_dlkm    ext4    /dev/block/mapper/system_dlkm    flags=logical;slotselect;display="System_dlkm"
+
+# Static A/B partitions — from /dev/block/by-name/ directly.
+/boot           emmc    /dev/block/by-name/boot          flags=slotselect;display="Boot"
+/init_boot      emmc    /dev/block/by-name/init_boot      flags=slotselect;display="Init Boot"
+/vendor_boot    emmc    /dev/block/by-name/vendor_boot    flags=slotselect;display="Vendor Boot"
+/dtbo           emmc    /dev/block/by-name/dtbo           flags=slotselect;display="DTBO"
+/vbmeta         emmc    /dev/block/by-name/vbmeta         flags=slotselect;display="vbmeta"
+/vbmeta_system  emmc    /dev/block/by-name/vbmeta_system  flags=slotselect;display="vbmeta_system"
+
+# Non-A/B.
+/metadata       f2fs    /dev/block/by-name/metadata      flags=display="Metadata"
+/data           f2fs    /dev/block/by-name/userdata      flags=fileencryption=aes-256-xts:aes-256-cts:v2+inlinecrypt_optimized:wrappedkey_v0;metadata_encryption=aes-256-xts:wrappedkey_v0;forceencrypt;display="Data"
+/persist        ext4    /dev/block/by-name/persist       flags=display="Persist"
+/misc           emmc    /dev/block/by-name/misc          flags=display="Misc"
+
+# No /cache partition on this device — confirmed absent from
+# /dev/block/by-name/, do not add one.
+
+# External storage — device-node glob patterns copied verbatim from
+# fstab.mt6835's voldmanaged lines (real controller paths for this
+# unit, not generic placeholders).
+/external_sd    auto    /devices/platform/soc/11240000.mmc*                    flags=display="SD Card";storage;wipeingui;removable
+/usb-otg        auto    /devices/platform/soc/11201000.usb0/11200000.xhci*     flags=display="USB OTG";storage;wipeingui;removable

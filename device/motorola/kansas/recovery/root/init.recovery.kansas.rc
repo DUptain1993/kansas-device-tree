@@ -1,0 +1,13 @@
+# init.recovery.kansas.rc
+#
+# Delete this file and the PRODUCT_COPY_FILES line referencing it in
+# device.mk if the stock boot/vendor_boot ramdisk you extracted
+# already ships an init.recovery.<board>.rc — check first with:
+#   abootimg -x vendor_boot.img && ls ramdisk/
+
+on init
+    mkdir /mnt/vendor/persist 0771 system system
+    symlink /mnt/vendor/persist /persist
+
+on boot
+    chown system system /dev/block/bootdevice/by-name/misc
