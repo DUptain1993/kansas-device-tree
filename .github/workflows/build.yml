@@ -69,6 +69,21 @@ jobs:
             /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
           sudo apt-get clean
 
+      # Run 11's log, read closely, orders the kill as: the runner process
+      # itself gets "Got signal: terminated" from OUTSIDE first, THEN its
+      # own cleanup ("Still alive, killing subprocesses...") is what SIGKILLs
+      # soong_build - not a plain kernel OOM-killer hitting soong_build
+      # directly. That ordering, plus the ~24 minutes run 11 then spent
+      # stuck reporting "in progress" before GitHub's backend finally
+      # concluded it as cancelled, is the signature of systemd-oomd (enabled
+      # by default on ubuntu-22.04 images) killing the runner's cgroup slice
+      # under memory pressure and the VM struggling to unwind while still
+      # under that same pressure. The swap step below helps by lowering
+      # pressure, but disabling the watchdog directly is the standard fix
+      # for this exact GitHub Actions failure mode.
+      - name: Disable systemd-oomd
+        run: sudo systemctl mask --now systemd-oomd.service systemd-oomd.socket
+
       # The previous "reserve a CPU core + heartbeat" mitigation didn't
       # help: run 11's heartbeat kept printing every 60s right up to the
       # kill, so the runner agent wasn't starved of CPU. The real signature
