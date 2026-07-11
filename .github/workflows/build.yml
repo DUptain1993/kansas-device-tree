@@ -144,7 +144,25 @@ jobs:
           export ALLOW_MISSING_DEPENDENCIES=true
           source build/envsetup.sh
           lunch twrp_kansas-ap2a-eng
-          mka ${{ github.event.inputs.build_target || 'bootimage' }} -j"$(nproc)"
+
+          # Runs 9 and 10 both died mid-build with "The runner has received a
+          # shutdown signal" at different, arbitrary points — not a compile
+          # error, and no queued run existed to explain it via
+          # cancel-in-progress. That message is what GitHub's Actions
+          # service produces when it can't get a heartbeat from the runner
+          # agent and concludes it's dead. `-j"$(nproc)"` saturates every
+          # core with the build, starving the runner agent's own process of
+          # CPU during the exact phase (right as mka starts compiling in
+          # earnest) both failures occurred in. Leaving one core free keeps
+          # the agent responsive; the periodic echo below is a second,
+          # independent safety net so a genuinely quiet compile phase never
+          # produces a long silent gap in the log either.
+          build_jobs="$(( $(nproc) > 1 ? $(nproc) - 1 : 1 ))"
+          ( while true; do sleep 60; echo "::notice::still building ($(date -u +%H:%M:%S) UTC)"; done ) &
+          heartbeat_pid=$!
+          trap 'kill "$heartbeat_pid" 2>/dev/null' EXIT
+
+          mka ${{ github.event.inputs.build_target || 'bootimage' }} -j"$build_jobs"
 
       - name: Collect output artifact
         working-directory: /home/runner/fox_14.1
