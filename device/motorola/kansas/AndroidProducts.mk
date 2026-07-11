@@ -16,12 +16,14 @@ PRODUCT_MAKEFILES := \
     $(LOCAL_DIR)/twrp_kansas.mk
 
 # fox_14.1's envsetup.sh requires the 3-part <product>-<release>-<variant>
-# form (confirmed from source: its own default fallback combo is
-# aosp_cf_x86_64_phone-trunk_staging-eng, and "trunk_staging" is the
-# hardcoded release token used throughout that fork even though it has
-# no real build/release/release_config_map.textproto). A 2-part combo
-# fails with "Invalid lunch combo" before anything else even starts.
+# form — a 2-part combo fails immediately with "Invalid lunch combo".
+# The release token is NOT free-form: build/make/core/release_config.mk
+# validates it against a real (if minimal) release_config_map, and
+# envsetup.sh's own generic fallback string ("trunk_staging") is NOT
+# a valid entry in it — first CI attempt failed with "No release
+# config found for TARGET_RELEASE: trunk_staging. Available releases
+# are: ap2a." "ap2a" is the only release this manifest defines.
 COMMON_LUNCH_CHOICES := \
-    twrp_kansas-trunk_staging-user \
-    twrp_kansas-trunk_staging-userdebug \
-    twrp_kansas-trunk_staging-eng
+    twrp_kansas-ap2a-user \
+    twrp_kansas-ap2a-userdebug \
+    twrp_kansas-ap2a-eng
