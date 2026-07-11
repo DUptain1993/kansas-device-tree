@@ -97,9 +97,9 @@ jobs:
       # step name above assumes), so disk headroom is not the constraint -
       # RAM is. Give the kernel swap to absorb that spike instead of
       # killing the process; disk space is otherwise idle here.
-      - name: Add swap space to absorb the Soong analysis memory spike
+      - name: Add swap space to absorb build memory spikes
         run: |
-          sudo fallocate -l 24G /mnt/swapfile
+          sudo fallocate -l 40G /mnt/swapfile
           sudo chmod 600 /mnt/swapfile
           sudo mkswap /mnt/swapfile
           sudo swapon /mnt/swapfile
@@ -181,20 +181,22 @@ jobs:
           source build/envsetup.sh
           lunch twrp_kansas-ap2a-eng
 
-          # Runs 9-11 all died the same way a few minutes into this step.
-          # Run 11 (with a 60s heartbeat added) proved it isn't CPU/log
-          # starvation of the runner agent - the heartbeat kept printing
-          # right up to the kill. The real culprit: "soong bootstrap failed
-          # with: signal: killed" (SIGKILL) every time, ~2.5-3 minutes after
-          # soong_build starts running, which is Soong's whole-tree
-          # Android.bp analysis - the single most memory-hungry moment in
-          # the build. That's the OOM killer (now mitigated by the swap
-          # step above), not a timeout. Leaving one core free for -j and
-          # keeping the heartbeat are both harmless and stay as cheap
-          # secondary safety nets (fewer parallel compiles trims peak
-          # memory too; the heartbeat keeps long quiet stretches visible in
-          # the log regardless of cause).
-          build_jobs="$(( $(nproc) > 1 ? $(nproc) - 1 : 1 ))"
+          # Runs 9-11 all died a few minutes into this step from memory
+          # pressure during Soong's whole-tree analysis; 24G swap + masking
+          # systemd-oomd (above) got run 13 past that and ~9 minutes into
+          # the step - real progress - but it then died anyway, and this
+          # time badly enough that even the job log was lost (BlobNotFound),
+          # not just cut off. That's a harder crash than the earlier
+          # systemd-oomd kills, consistent with genuinely running out of
+          # RAM+swap during actual compilation, where multiple parallel
+          # cc1plus/clang processes each hold significant memory - not just
+          # Soong's one-time analysis spike. -j(nproc-1) is still too many
+          # concurrent compiles for this runner's memory budget, so cap
+          # parallelism hard instead of scaling it off core count, and give
+          # more swap headroom. If this still isn't enough, the runner
+          # doesn't have enough RAM for this build regardless of tuning and
+          # a larger-memory runner is the real fix.
+          build_jobs=2
           ( while true; do sleep 60; echo "::notice::still building ($(date -u +%H:%M:%S) UTC)"; done ) &
           heartbeat_pid=$!
           trap 'kill "$heartbeat_pid" 2>/dev/null' EXIT
