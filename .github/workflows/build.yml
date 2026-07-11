@@ -118,7 +118,7 @@ jobs:
           set -e
           export ALLOW_MISSING_DEPENDENCIES=true
           source build/envsetup.sh
-          lunch twrp_kansas-eng
+          lunch twrp_kansas-trunk_staging-eng
           mka ${{ github.event.inputs.build_target || 'bootimage' }} -j"$(nproc)"
 
       - name: Collect output artifact
