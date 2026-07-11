@@ -38,15 +38,21 @@ jobs:
       # a stock ubuntu-22.04 runner has ~14GB free, and OrangeFox's own
       # sync README says it can use 40-80GB. easimon/maximize-build-space
       # merges the root filesystem's free space with the runner's much
-      # larger /mnt temp disk into one LVM volume, which is the standard
-      # fix for this exact class of problem in AOSP/ROM-build CI. It
-      # mounts the merged volume at build-mount-path, which MUST be set
-      # to /home/runner here — every later step in this workflow builds
-      # under $HOME/fox_14.1, not the default $GITHUB_WORKSPACE.
+      # larger /mnt temp disk into one LVM volume, mounted at
+      # build-mount-path.
+      #
+      # Seventh attempt used build-mount-path: /home/runner and failed
+      # immediately ("Access to the path '/home/runner/work/_temp' is
+      # denied") — /home/runner is a PARENT of the live Actions runner's
+      # own working directory (.../work/_temp), so remounting over it
+      # breaks the runner process itself. Mounting at the specific
+      # /home/runner/fox_14.1 path instead — a fresh directory that
+      # isn't a parent of anything the runner needs live, and happens to
+      # be exactly the path every later step already builds under.
       - name: Maximize build space
         uses: easimon/maximize-build-space@v10
         with:
-          build-mount-path: '/home/runner'
+          build-mount-path: '/home/runner/fox_14.1'
           remove-dotnet: 'true'
           remove-android: 'true'
           remove-haskell: 'true'
