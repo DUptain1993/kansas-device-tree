@@ -35,29 +35,39 @@ jobs:
     steps:
       # Sixth CI attempt was killed here ("Got signal: terminated" right
       # after Soong finished bootstrapping, no explicit error logged) —
-      # a stock ubuntu-22.04 runner has ~14GB free, and OrangeFox's own
-      # sync README says it can use 40-80GB. easimon/maximize-build-space
-      # merges the root filesystem's free space with the runner's much
-      # larger /mnt temp disk into one LVM volume, mounted at
-      # build-mount-path.
+      # a stock ubuntu-22.04 runner has ~14GB free on /, and OrangeFox's
+      # own sync README says it can use 40-80GB.
       #
-      # Seventh attempt used build-mount-path: /home/runner and failed
-      # immediately ("Access to the path '/home/runner/work/_temp' is
-      # denied") — /home/runner is a PARENT of the live Actions runner's
-      # own working directory (.../work/_temp), so remounting over it
-      # breaks the runner process itself. Mounting at the specific
-      # /home/runner/fox_14.1 path instead — a fresh directory that
-      # isn't a parent of anything the runner needs live, and happens to
-      # be exactly the path every later step already builds under.
-      - name: Maximize build space
-        uses: easimon/maximize-build-space@v10
-        with:
-          build-mount-path: '/home/runner/fox_14.1'
-          remove-dotnet: 'true'
-          remove-android: 'true'
-          remove-haskell: 'true'
-          remove-codeql: 'true'
-          remove-docker-images: 'true'
+      # Seventh attempt (easimon/maximize-build-space, build-mount-path:
+      # /home/runner) failed immediately: /home/runner is a PARENT of
+      # the live Actions runner's own working directory
+      # (.../work/_temp), so remounting over it breaks the runner
+      # process itself.
+      #
+      # Eighth attempt (same action, build-mount-path:
+      # /home/runner/fox_14.1) avoided that, but the resulting LVM
+      # volume over a loop-device file was drastically slower for
+      # `repo sync`'s many-small-file access pattern than plain disk —
+      # the identical sync step took 10 minutes in an earlier run with
+      # no LVM layer, and was still not done after 55+ minutes here, so
+      # it was cancelled.
+      #
+      # GitHub-hosted runners already carry a large secondary disk
+      # natively mounted at /mnt (no LVM/loop-device abstraction
+      # needed) — building directly there sidesteps both problems:
+      # plenty of space, and no filesystem-indirection I/O penalty.
+      - name: Relocate build directory to the larger /mnt disk
+        run: |
+          sudo mkdir -p /mnt/fox_14.1
+          sudo chown "$(id -u):$(id -g)" /mnt/fox_14.1
+          ln -s /mnt/fox_14.1 "$HOME/fox_14.1"
+          df -h / /mnt
+
+      - name: Free up root filesystem space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+          sudo apt-get clean
 
       - name: Install build dependencies
         run: |
