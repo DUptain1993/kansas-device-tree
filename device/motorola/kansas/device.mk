@@ -33,4 +33,12 @@ PRODUCT_PACKAGES += \
 # only after actually creating vendor/motorola/kansas/kansas-vendor.mk.
 # $(call inherit-product, vendor/motorola/kansas/kansas-vendor.mk)
 
-$(call inherit-product, $(SRC_TARGET_DIR)/product/embedded.mk)
+# Fourth CI failure: "build/make/target/product/embedded.mk does not
+# exist" — this is a trimmed "minimal manifest" build/make fork, not
+# full AOSP, and doesn't carry most of target/product/*.mk. Verified
+# against a real working same-chipset (mt6835) OrangeFox device tree
+# (Sairb1/realme11-mt6835-orangefox-device-tree): it inherits only
+# these two, both confirmed present in this fork's target/product/.
+ENABLE_VIRTUAL_AB := true
+$(call inherit-product, $(SRC_TARGET_DIR)/product/virtual_ab_ota.mk)
+$(call inherit-product, $(SRC_TARGET_DIR)/product/emulated_storage.mk)
