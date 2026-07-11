@@ -27,6 +27,14 @@ TARGET_2ND_CPU_ABI := armeabi-v7a
 TARGET_2ND_CPU_ABI2 := armeabi
 TARGET_2ND_CPU_VARIANT := generic
 
+# Fifth CI failure: "Building a 32-bit-app-only product on a 64-bit
+# device" — board_config.mk requires these explicitly when both a
+# primary 64-bit and secondary 32-bit ABI are declared (as above);
+# without them it can't tell this apart from a 32-bit-only product.
+TARGET_USES_64_BIT_BINDER := true
+TARGET_SUPPORTS_32_BIT_APPS := true
+TARGET_SUPPORTS_64_BIT_APPS := true
+
 # Confirmed: getprop ro.board.platform / ro.hardware on-device == mt6835
 # (MediaTek Dimensity 6300-class SoC).
 TARGET_BOARD_PLATFORM := mt6835
