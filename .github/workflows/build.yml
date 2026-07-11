@@ -69,6 +69,27 @@ jobs:
             /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
           sudo apt-get clean
 
+      # The previous "reserve a CPU core + heartbeat" mitigation didn't
+      # help: run 11's heartbeat kept printing every 60s right up to the
+      # kill, so the runner agent wasn't starved of CPU. The real signature
+      # was "soong bootstrap failed with: signal: killed" (SIGKILL) landing
+      # ~2.5-3 minutes after soong_build itself started running (the "cp
+      # .../soong_build" line), both times, at the point Soong analyzes the
+      # entire Android.bp graph for the whole synced tree - the single most
+      # memory-hungry moment in the build. That's the OOM killer, not a
+      # timeout or a cancellation. /mnt turned out to be the same 146G
+      # filesystem as / on this runner image (not a separate disk as the
+      # step name above assumes), so disk headroom is not the constraint -
+      # RAM is. Give the kernel swap to absorb that spike instead of
+      # killing the process; disk space is otherwise idle here.
+      - name: Add swap space to absorb the Soong analysis memory spike
+        run: |
+          sudo fallocate -l 24G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -145,18 +166,19 @@ jobs:
           source build/envsetup.sh
           lunch twrp_kansas-ap2a-eng
 
-          # Runs 9 and 10 both died mid-build with "The runner has received a
-          # shutdown signal" at different, arbitrary points — not a compile
-          # error, and no queued run existed to explain it via
-          # cancel-in-progress. That message is what GitHub's Actions
-          # service produces when it can't get a heartbeat from the runner
-          # agent and concludes it's dead. `-j"$(nproc)"` saturates every
-          # core with the build, starving the runner agent's own process of
-          # CPU during the exact phase (right as mka starts compiling in
-          # earnest) both failures occurred in. Leaving one core free keeps
-          # the agent responsive; the periodic echo below is a second,
-          # independent safety net so a genuinely quiet compile phase never
-          # produces a long silent gap in the log either.
+          # Runs 9-11 all died the same way a few minutes into this step.
+          # Run 11 (with a 60s heartbeat added) proved it isn't CPU/log
+          # starvation of the runner agent - the heartbeat kept printing
+          # right up to the kill. The real culprit: "soong bootstrap failed
+          # with: signal: killed" (SIGKILL) every time, ~2.5-3 minutes after
+          # soong_build starts running, which is Soong's whole-tree
+          # Android.bp analysis - the single most memory-hungry moment in
+          # the build. That's the OOM killer (now mitigated by the swap
+          # step above), not a timeout. Leaving one core free for -j and
+          # keeping the heartbeat are both harmless and stay as cheap
+          # secondary safety nets (fewer parallel compiles trims peak
+          # memory too; the heartbeat keeps long quiet stretches visible in
+          # the log regardless of cause).
           build_jobs="$(( $(nproc) > 1 ? $(nproc) - 1 : 1 ))"
           ( while true; do sleep 60; echo "::notice::still building ($(date -u +%H:%M:%S) UTC)"; done ) &
           heartbeat_pid=$!
