@@ -25,12 +25,12 @@ PRODUCT_PACKAGES += \
 PRODUCT_PACKAGES += \
     libion
 
-$(call inherit-product, vendor/motorola/kansas/kansas-vendor.mk)
-# ^ Only if you have pulled a matching proprietary-blobs vendor tree
-#   (e.g. via TheMuppets-style extraction from the stock OTA). If you
-#   have not extracted vendor blobs yet, comment this line out — a
-#   recovery-only build usually does NOT need the vendor blob tree,
-#   since TWRP/OrangeFox statically link almost everything they need.
-#   Leave commented until you've confirmed you actually need it.
+# Left disabled: first CI build failed with "vendor/motorola/kansas/
+# kansas-vendor.mk does not exist" — no proprietary-blobs vendor tree
+# has been pulled for this device (e.g. via TheMuppets-style OTA
+# extraction), and a recovery-only build doesn't need one since
+# OrangeFox statically links almost everything it needs. Uncomment
+# only after actually creating vendor/motorola/kansas/kansas-vendor.mk.
+# $(call inherit-product, vendor/motorola/kansas/kansas-vendor.mk)
 
 $(call inherit-product, $(SRC_TARGET_DIR)/product/embedded.mk)
