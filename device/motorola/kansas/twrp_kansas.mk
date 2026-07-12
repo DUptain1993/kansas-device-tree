@@ -5,6 +5,7 @@
 # if you ever extend this tree beyond recovery.
 #
 
+$(call inherit-product, vendor/recovery/config/common.mk)
 $(call inherit-product, device/motorola/kansas/device.mk)
 
 PRODUCT_NAME := twrp_kansas
