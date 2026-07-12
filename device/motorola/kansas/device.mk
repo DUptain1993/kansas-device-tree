@@ -8,13 +8,24 @@
 LOCAL_PATH := device/motorola/kansas
 
 PRODUCT_COPY_FILES += \
-    $(LOCAL_PATH)/recovery/root/etc/twrp.fstab:$(TARGET_COPY_OUT_RECOVERY)/root/etc/twrp.fstab \
     $(LOCAL_PATH)/recovery/root/init.recovery.kansas.rc:$(TARGET_COPY_OUT_RECOVERY)/root/init.recovery.kansas.rc
 
 # Recovery-side init/ueventd rc — only needed if the stock boot ramdisk
 # doesn't already carry an init.recovery.<board>.rc; delete the
 # PRODUCT_COPY_FILES line above if it does (check the extracted boot
 # ramdisk with `abootimg -x boot.img` first).
+#
+# Run 19 dropped the twrp.fstab copy that used to live here
+# ($(LOCAL_PATH)/recovery/root/etc/twrp.fstab:$(TARGET_COPY_OUT_RECOVERY)/root/etc/twrp.fstab):
+# it's redundant with — and now that root/ is actually populated
+# (init.environ.rc above), directly conflicts with — the standard AOSP
+# recovery-packaging recipe, which already copies this exact file
+# (BoardConfig.mk's TARGET_RECOVERY_FSTAB points at the same path) to
+# recovery/root/system/etc/recovery.fstab on its own. Pre-placing a real
+# directory at recovery/root/etc/ collided with root/etc being a symlink
+# to /system/etc (created by init.environ.rc's post-install step):
+# "could not make way for new symlink: root/etc / cannot delete
+# non-empty directory: root/etc".
 
 PRODUCT_PACKAGES += \
     libtwrpfsck \
