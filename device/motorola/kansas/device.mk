@@ -42,3 +42,12 @@ PRODUCT_PACKAGES += \
 ENABLE_VIRTUAL_AB := true
 $(call inherit-product, $(SRC_TARGET_DIR)/product/virtual_ab_ota.mk)
 $(call inherit-product, $(SRC_TARGET_DIR)/product/emulated_storage.mk)
+
+# Run 17: recovery ramdisk packaging failed because
+# out/target/product/kansas/root never gets created — nothing above
+# installs anything under $(TARGET_ROOT_OUT), since no base product
+# makefile is inherited. generic_ramdisk.mk is AOSP's makefile for
+# exactly this: it adds init_first_stage (populates TARGET_ROOT_OUT)
+# and snapuserd_ramdisk (already needed, BOARD_SUPPORTS_VIRTUAL_AB is
+# true above) without pulling in a full system image.
+$(call inherit-product, $(SRC_TARGET_DIR)/product/generic_ramdisk.mk)

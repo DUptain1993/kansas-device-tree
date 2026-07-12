@@ -223,30 +223,36 @@ jobs:
           # directory". Read core/Makefile from the exact build/make tag
           # this fox_14.1/minimal-manifest tree pins
           # (android-14.0.0_r67): the recovery-ramdisk-packaging rule
-          # (ramdisk_files-timestamp) rsyncs FROM $(TARGET_ROOT_OUT)
-          # (.../root) as its baseline, but the make target that actually
-          # `mkdir -p`s that directory (installed-files-root.txt, via
-          # INSTALLED_FILES_FILE_ROOT) is wired only into
-          # FULL_SYSTEMIMAGE_DEPS - i.e. it's only ever built as a side
-          # effect of building the full system image.
+          # (ramdisk_files-timestamp, core/Makefile:2694) rsyncs FROM
+          # $(TARGET_ROOT_OUT) (.../root) as its baseline, and depends
+          # directly on $(INTERNAL_ROOT_FILES) - the individual files
+          # destined for that directory - not on installed-files-root.txt
+          # or systemimage at all.
           #
-          # Run 16 tried requesting that exact intermediate file
-          # ("out/target/product/kansas/installed-files-root.txt") as a
-          # raw extra mka goal - that's a valid Make-level target in the
-          # Makefile source, but ninja rejected it outright ("ninja:
-          # unknown target"), meaning Kati never actually emitted it into
-          # build.ninja as a directly-requestable goal (unlike the
-          # well-known top-level phony targets). Ad-hoc intermediate file
-          # paths aren't reliable Kati/ninja goals here, so request the
-          # real top-level phony target instead: "systemimage" is a
-          # standard, always-registered AOSP goal, and it's what
-          # FULL_SYSTEMIMAGE_DEPS (and therefore installed-files-root.txt)
-          # actually exists to feed. This costs more than the raw file
-          # would have, but run 15 already compiled 5293/5296 of
-          # bootimage's own targets, so systemimage - which shares almost
-          # all of the same PRODUCT_PACKAGES - should add comparatively
-          # few new ones, not a second full build.
-          mka ${{ github.event.inputs.build_target || 'bootimage' }} systemimage -j"$build_jobs"
+          # Run 16 tried requesting installed-files-root.txt as a raw
+          # extra mka goal - ninja rejected it ("ninja: unknown target").
+          #
+          # Run 17 tried "systemimage" instead, on the theory that
+          # FULL_SYSTEMIMAGE_DEPS (which does include
+          # INSTALLED_FILES_FILE_ROOT) would pull root population in as a
+          # side effect. Confirmed a dead end: kansas's BoardConfig.mk/
+          # device.mk never sets PRODUCT_BUILD_SYSTEM_IMAGE,
+          # PRODUCT_USE_DYNAMIC_PARTITION_SIZE, or
+          # BOARD_SYSTEMIMAGE_PARTITION_SIZE, so core/board_config.mk
+          # clears BUILDING_SYSTEM_IMAGE to empty, and "systemimage"
+          # resolves to the empty stub phony at core/Makefile:939 - not
+          # the real target (core/Makefile:3529, only added inside
+          # `ifdef BUILDING_SYSTEM_IMAGE`). Requesting it added zero new
+          # ninja work: same 5293/5296 failure point, installed-files-
+          # root.txt never appears as a build step in the log either way.
+          #
+          # The actual fix is in the device tree, not here:
+          # device/motorola/kansas/device.mk now inherits
+          # target/product/generic_ramdisk.mk, which adds
+          # init_first_stage to PRODUCT_PACKAGES - that's what actually
+          # populates $(TARGET_ROOT_OUT) in modern (system-as-root/GKI)
+          # AOSP, without pulling in a full system image build.
+          mka ${{ github.event.inputs.build_target || 'bootimage' }} -j"$build_jobs"
 
       - name: Collect output artifact
         working-directory: /home/runner/fox_14.1
