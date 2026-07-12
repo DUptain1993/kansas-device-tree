@@ -94,16 +94,30 @@ jobs:
       # memory-hungry moment in the build. That's the OOM killer, not a
       # timeout or a cancellation. /mnt turned out to be the same 146G
       # filesystem as / on this runner image (not a separate disk as the
-      # step name above assumes), so disk headroom is not the constraint -
-      # RAM is. Give the kernel swap to absorb that spike instead of
-      # killing the process; disk space is otherwise idle here.
+      # step name above assumes) - confirmed via the "Relocate..." step's
+      # own df -h output (146G total, 89G avail at job start). That df
+      # output is exactly why run 14's "grow swap to 40G" was wrong: it
+      # treated disk as idle and RAM as the only scarce resource, but a
+      # 40G swapfile plus the 40-80G OrangeFox tree plus ccache easily
+      # exceeds the 89G actually available on this single shared disk.
+      # Run 14 died in 10 minutes with an unhandled
+      # "IOException: No space left on device" crashing the runner's own
+      # log writer - a disk-full crash, not an OOM kill signature (no
+      # "Got signal: terminated" / "signal: killed" this time) - and it
+      # died faster than run 13 (24G swap) specifically because it had
+      # 16G less disk headroom to burn through first. Keep swap modest
+      # (12G is ample for a single Soong analysis pass / a 2-job compile,
+      # per runs 12-13 which got well into the build with 24G) and print
+      # df -h at each disk-relevant checkpoint below instead of guessing
+      # from crash signatures alone.
       - name: Add swap space to absorb build memory spikes
         run: |
-          sudo fallocate -l 40G /mnt/swapfile
+          sudo fallocate -l 12G /mnt/swapfile
           sudo chmod 600 /mnt/swapfile
           sudo mkswap /mnt/swapfile
           sudo swapon /mnt/swapfile
           free -h
+          df -h / /mnt
 
       - name: Install build dependencies
         run: |
@@ -153,6 +167,7 @@ jobs:
         run: |
           cd ~/OrangeFox_sync
           ./orangefox_sync.sh --branch "${{ github.event.inputs.fox_branch || '14.1' }}" --path "$HOME/fox_14.1"
+          df -h / /mnt
 
       - name: Place device tree
         run: |
@@ -197,6 +212,7 @@ jobs:
           # doesn't have enough RAM for this build regardless of tuning and
           # a larger-memory runner is the real fix.
           build_jobs=2
+          df -h / /mnt
           ( while true; do sleep 60; echo "::notice::still building ($(date -u +%H:%M:%S) UTC)"; done ) &
           heartbeat_pid=$!
           trap 'kill "$heartbeat_pid" 2>/dev/null' EXIT
