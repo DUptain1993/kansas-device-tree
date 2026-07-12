@@ -217,7 +217,24 @@ jobs:
           heartbeat_pid=$!
           trap 'kill "$heartbeat_pid" 2>/dev/null' EXIT
 
-          mka ${{ github.event.inputs.build_target || 'bootimage' }} -j"$build_jobs"
+          # Run 15 (disk fix in place) got to 99% (5293/5296) and then
+          # failed: "rsync: [sender] link_stat
+          # ".../out/target/product/kansas/root" failed: No such file or
+          # directory". Read core/Makefile from the exact build/make tag
+          # this fox_14.1/minimal-manifest tree pins
+          # (android-14.0.0_r67): the recovery-ramdisk-packaging rule
+          # (ramdisk_files-timestamp) rsyncs FROM $(TARGET_ROOT_OUT)
+          # (.../root) as its baseline, but the make target that actually
+          # `mkdir -p`s that directory (installed-files-root.txt, via
+          # INSTALLED_FILES_FILE_ROOT) is wired only into
+          # FULL_SYSTEMIMAGE_DEPS - i.e. it's only ever built as a side
+          # effect of building the full system image. This workflow
+          # deliberately builds only bootimage (a full systemimage isn't
+          # needed for a recovery-only build and would cost far more
+          # time/memory), so that directory was never created. Request it
+          # as an explicit extra goal alongside bootimage instead of
+          # pulling in the whole system image.
+          mka ${{ github.event.inputs.build_target || 'bootimage' }} out/target/product/kansas/installed-files-root.txt -j"$build_jobs"
 
       - name: Collect output artifact
         working-directory: /home/runner/fox_14.1
