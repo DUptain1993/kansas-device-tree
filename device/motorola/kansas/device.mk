@@ -43,11 +43,27 @@ ENABLE_VIRTUAL_AB := true
 $(call inherit-product, $(SRC_TARGET_DIR)/product/virtual_ab_ota.mk)
 $(call inherit-product, $(SRC_TARGET_DIR)/product/emulated_storage.mk)
 
-# Run 17: recovery ramdisk packaging failed because
-# out/target/product/kansas/root never gets created — nothing above
-# installs anything under $(TARGET_ROOT_OUT), since no base product
-# makefile is inherited. generic_ramdisk.mk is AOSP's makefile for
-# exactly this: it adds init_first_stage (populates TARGET_ROOT_OUT)
-# and snapuserd_ramdisk (already needed, BOARD_SUPPORTS_VIRTUAL_AB is
-# true above) without pulling in a full system image.
-$(call inherit-product, $(SRC_TARGET_DIR)/product/generic_ramdisk.mk)
+# Run 17 tried inheriting generic_ramdisk.mk for its init_first_stage
+# package, on the theory that would populate $(TARGET_ROOT_OUT)
+# ("root") — wrong: system/core/init/Android.bp forces
+# init_first_stage's `installable` to false specifically when
+# BOARD_USES_RECOVERY_AS_BOOT is true (comment there: "Do not install
+# init_first_stage even with mma if we're system-as-root. Otherwise,
+# it will overwrite the symlink."), which this device sets. Confirmed
+# empirically: total ninja steps grew (snapuserd_ramdisk etc. landed
+# under recovery/root/first_stage_ramdisk/, a different output path)
+# but out/target/product/kansas/root still never got created — same
+# rsync failure, unchanged.
+#
+# Run 18: on a system-as-root + recovery-as-boot device like this one,
+# $(TARGET_ROOT_OUT) is *supposed* to end up basically empty — the
+# recovery packaging rule's own recipe supplies init/default.prop/etc
+# itself afterwards (see core/Makefile's ramdisk_files-timestamp rule:
+# `ln -sf /system/bin/init ...`). The only real bug is that ninja never
+# creates the bare directory when literally nothing installs under it.
+# AOSP has an existing idiom for exactly this — target/product/
+# ramdisk_stub.mk does the identical thing for TARGET_COPY_OUT_VENDOR_RAMDISK
+# ("PRODUCT_COPY_FILES += ...:$(TARGET_COPY_OUT_VENDOR_RAMDISK)/nonempty")
+# so an image isn't treated as empty. Apply the same idiom to root.
+PRODUCT_COPY_FILES += \
+    build/make/target/product/ramdisk_stub.mk:root/nonempty
