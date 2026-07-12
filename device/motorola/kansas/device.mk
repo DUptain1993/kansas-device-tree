@@ -55,15 +55,25 @@ $(call inherit-product, $(SRC_TARGET_DIR)/product/emulated_storage.mk)
 # but out/target/product/kansas/root still never got created — same
 # rsync failure, unchanged.
 #
-# Run 18: on a system-as-root + recovery-as-boot device like this one,
-# $(TARGET_ROOT_OUT) is *supposed* to end up basically empty — the
-# recovery packaging rule's own recipe supplies init/default.prop/etc
-# itself afterwards (see core/Makefile's ramdisk_files-timestamp rule:
-# `ln -sf /system/bin/init ...`). The only real bug is that ninja never
-# creates the bare directory when literally nothing installs under it.
-# AOSP has an existing idiom for exactly this — target/product/
-# ramdisk_stub.mk does the identical thing for TARGET_COPY_OUT_VENDOR_RAMDISK
-# ("PRODUCT_COPY_FILES += ...:$(TARGET_COPY_OUT_VENDOR_RAMDISK)/nonempty")
-# so an image isn't treated as empty. Apply the same idiom to root.
-PRODUCT_COPY_FILES += \
-    build/make/target/product/ramdisk_stub.mk:root/nonempty
+# Run 18 tried a bare "nonempty" stub file in root/ (mirroring AOSP's
+# own ramdisk_stub.mk idiom for TARGET_COPY_OUT_VENDOR_RAMDISK) just to
+# get the rsync source directory to exist. That got past the rsync,
+# but OrangeFox's own build script (vendor/recovery/OrangeFox_A14.sh)
+# then failed on the copied-over root needing real structure it didn't
+# have: "cp: cannot create regular file '.../root//sbin/magiskboot':
+# No such file or directory" and "touch: '.../root/linkerconfig/
+# ld.config.txt': No such file or directory" — a stub file alone
+# doesn't create the directories OrangeFox and the AOSP recipe itself
+# (which touches linkerconfig/ld.config.txt as a placeholder) expect.
+#
+# Run 19: the real, unconditional (no BOARD_USES_RECOVERY_AS_BOOT
+# gating, unlike init_first_stage) AOSP mechanism for this is the
+# "init.environ.rc" module (system/core/rootdir/Android.mk) — its
+# LOCAL_MODULE_PATH is $(TARGET_ROOT_OUT), and its LOCAL_POST_INSTALL_CMD
+# is exactly what mkdir -p's the standard root skeleton (dev, proc,
+# sys, linkerconfig, tmp, the bin/etc symlinks, etc. — including
+# BOARD_ROOT_EXTRA_FOLDERS, see BoardConfig.mk for the "sbin" OrangeFox
+# needs) on every real device. It's normally pulled in by base_system.mk,
+# which this recovery-only tree doesn't inherit — add it directly.
+PRODUCT_PACKAGES += \
+    init.environ.rc

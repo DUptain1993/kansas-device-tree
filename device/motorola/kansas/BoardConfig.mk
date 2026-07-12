@@ -129,6 +129,14 @@ BOARD_MAIN_SIZE := 8352956416
 BOARD_SUPPRESS_SECURE_ERASE := true
 TW_INCLUDE_REPACKTOOLS := true
 
+# OrangeFox's own build script (vendor/recovery/OrangeFox_A14.sh) copies
+# magiskboot to <recovery_root>/sbin/ unconditionally, but nothing on a
+# modern (system-as-root) root creates /sbin — BOARD_ROOT_EXTRA_FOLDERS
+# is the standard AOSP hook (system/core/rootdir/Android.mk's
+# init.environ.rc post-install step, see device.mk) for adding exactly
+# this kind of OEM/vendor-specific extra root directory.
+BOARD_ROOT_EXTRA_FOLDERS += sbin
+
 # ------------------------------------------------------------------
 # Filesystem / block devices
 # ------------------------------------------------------------------
