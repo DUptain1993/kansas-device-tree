@@ -16,8 +16,8 @@ on:
         default: "14.1"
         required: false
       build_target:
-        description: "Make target. kansas has no recovery partition; recovery is packed into vendor_boot (BOARD_USES_RECOVERY_AS_BOOT=false + BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT=true), which is a dependency of the bootimage goal — so bootimage is correct here, NOT recoveryimage."
-        default: "bootimage"
+        description: "Make target(s). Run 24 proved 'bootimage' does NOT pull in vendor_boot on this OrangeFox build/make fork (it built only a kernel-only boot.img, no vendor_boot.img at all, despite BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT). Every real OrangeFox tree for this recovery-in-vendor_boot scheme — including another Motorola device on the identical fox_14.1 sync workflow — builds 'adbd vendorbootimage' explicitly instead."
+        default: "adbd vendorbootimage"
         required: false
   push:
     branches: [ "main" ]
@@ -252,7 +252,7 @@ jobs:
           # init_first_stage to PRODUCT_PACKAGES - that's what actually
           # populates $(TARGET_ROOT_OUT) in modern (system-as-root/GKI)
           # AOSP, without pulling in a full system image build.
-          mka ${{ github.event.inputs.build_target || 'bootimage' }} -j"$build_jobs"
+          mka ${{ github.event.inputs.build_target || 'adbd vendorbootimage' }} -j"$build_jobs"
 
       - name: Collect output artifact
         working-directory: /home/runner/fox_14.1
