@@ -16,7 +16,7 @@ on:
         default: "14.1"
         required: false
       build_target:
-        description: "Make target. kansas has no recovery partition and a separate init_boot (confirmed on-device) — the recovery ramdisk packs into init_boot.img, so bootimage is correct here, NOT recoveryimage."
+        description: "Make target. kansas has no recovery partition; recovery is packed into vendor_boot (BOARD_USES_RECOVERY_AS_BOOT=false + BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT=true), which is a dependency of the bootimage goal — so bootimage is correct here, NOT recoveryimage."
         default: "bootimage"
         required: false
   push:
@@ -258,13 +258,15 @@ jobs:
         working-directory: /home/runner/fox_14.1
         run: |
           mkdir -p /home/runner/out-artifact
-          # init_boot.img is the one that actually carries the recovery
-          # ramdisk on this device (confirmed: boot_a's ramdisk_size=0,
-          # separate init_boot_a/b partitions exist). boot.img/recovery.img/
-          # OrangeFox's flashable *.zip are collected too in case the
-          # target list changes later.
+          # vendor_boot.img is the one that actually carries the recovery
+          # ramdisk on this device (BOARD_USES_RECOVERY_AS_BOOT=false +
+          # BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT=true in
+          # BoardConfig.mk — init_boot stays generic/untouched on this
+          # GKI 2.0 device, boot is kernel-only). boot.img/init_boot.img/
+          # recovery.img/OrangeFox's flashable *.zip are collected too in
+          # case the target list changes later.
           find out/target/product/kansas -maxdepth 1 \
-            \( -name "init_boot.img" -o -name "recovery.img" -o -name "boot.img" -o -name "*.zip" \) \
+            \( -name "vendor_boot.img" -o -name "init_boot.img" -o -name "recovery.img" -o -name "boot.img" -o -name "*.zip" \) \
             -exec cp {} /home/runner/out-artifact/ \;
 
       - name: Upload artifact

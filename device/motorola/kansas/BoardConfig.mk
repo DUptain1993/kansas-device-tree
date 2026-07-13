@@ -81,32 +81,51 @@ BOARD_KERNEL_IMAGE_NAME := Image.lz4
 # TARGET_KERNEL_CROSS_COMPILE_PREFIX := aarch64-linux-gnu-
 
 # ------------------------------------------------------------------
-# Boot image / recovery-as-boot
+# Boot image / recovery-as-vendor_boot
 # ------------------------------------------------------------------
 # Confirmed by hex-dumping the live boot_a partition: magic ANDROID!,
 # header_size=1584 (0x630), header_version=4 → boot_img_hdr_v4.
-BOARD_BOOTIMG_HEADER_VERSION := 4
-# BOARD_BOOTIMG_HEADER_VERSION by itself is inert — nothing in
-# build/make reads it. mkbootimg only honors --header_version from
-# BOARD_MKBOOTIMG_ARGS; without this line the 2026-07-12 artifact came
-# out as a header v0 image (verified by hex dump) that the v4-only
-# bootloader can't boot.
-BOARD_MKBOOTIMG_ARGS += --header_version $(BOARD_BOOTIMG_HEADER_VERSION)
+# This is the real AOSP variable name (BOARD_BOOTIMG_HEADER_VERSION,
+# which this used to be called, is not — build/make never reads it).
+# That matters more now than it did before: with recovery moved to
+# vendor_boot below, other parts of the build consult this variable
+# directly for vendor_boot's own header too, not just mkbootimg's args.
+BOARD_BOOT_HEADER_VERSION := 4
+# Still forward it explicitly — this line, not the variable above, is
+# what actually fixed the 2026-07-12 build producing a header v0
+# boot.img. Belt and suspenders now that the variable name is also right.
+BOARD_MKBOOTIMG_ARGS += --header_version $(BOARD_BOOT_HEADER_VERSION)
 BOARD_KERNEL_CMDLINE :=
 # BOARD_KERNEL_BASE / BOARD_KERNEL_PAGESIZE are a v0-v2 boot header
 # concept and unused for header v4 — deliberately omitted, do not
 # re-add them without a reason.
 
-# by-name has no `recovery`/`recovery_a` entry at all on this unit —
-# confirmed BOARD_USES_RECOVERY_AS_BOOT is correct, not a guess.
-BOARD_USES_RECOVERY_AS_BOOT := true
+# by-name has no `recovery`/`recovery_a` entry on this unit, so there's
+# no separate recovery partition — confirmed, not a guess. But that does
+# NOT mean recovery belongs in `boot`: this is a genuine GKI 2.0 split
+# device (separate init_boot_a/b, AND a real vendor_boot_a/b) where
+# init_boot is meant to stay 100% generic/untouched — AOSP's build
+# system has no "pack recovery into init_boot" option at all;
+# board_config.mk only offers boot XOR vendor_boot. Verified against a
+# real, shipped OrangeFox tree for an equivalent GKI-2.0 device
+# (separate init_boot + vendor_boot, same shape as this one): recovery
+# goes into vendor_boot, via BOARD_USES_RECOVERY_AS_BOOT := false below,
+# not true. The previous setting here (true) packed a combined
+# kernel+ramdisk image into `boot` instead — a 64MB image exactly
+# matching BOARD_BOOTIMAGE_PARTITION_SIZE, which flashed fine but did
+# nothing on the real device, because boot_a's ramdisk really is empty
+# and unused on this hardware (confirmed above); the bootloader just
+# kept booting stock recovery out of init_boot regardless of what was
+# in boot.
+BOARD_USES_RECOVERY_AS_BOOT := false
+BOARD_USES_GENERIC_KERNEL_IMAGE := true
+BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT := true
+BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT := true
+BOARD_EXCLUDE_KERNEL_FROM_RECOVERY_IMAGE := false
 
-# This device has a SEPARATE init_boot_a/init_boot_b partition
-# (Android-13-style GKI 2.0 split) and boot_a's ramdisk is empty, so
-# the recovery ramdisk must be packed into init_boot, not boot or
-# vendor_boot. Do NOT set BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT
-# — that flag is for older A/B devices WITHOUT a separate init_boot,
-# which this is not.
+# init_boot itself stays generic/stock and unmodified by this build —
+# this size is only here for AB_OTA_PARTITIONS/OTA accounting of the
+# real partition, not because this tree packs anything into it.
 BOARD_INIT_BOOT_IMAGE_PARTITION_SIZE := 0x00800000
 
 # ------------------------------------------------------------------
