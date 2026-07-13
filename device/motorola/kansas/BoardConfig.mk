@@ -86,6 +86,12 @@ BOARD_KERNEL_IMAGE_NAME := Image.lz4
 # Confirmed by hex-dumping the live boot_a partition: magic ANDROID!,
 # header_size=1584 (0x630), header_version=4 → boot_img_hdr_v4.
 BOARD_BOOTIMG_HEADER_VERSION := 4
+# BOARD_BOOTIMG_HEADER_VERSION by itself is inert — nothing in
+# build/make reads it. mkbootimg only honors --header_version from
+# BOARD_MKBOOTIMG_ARGS; without this line the 2026-07-12 artifact came
+# out as a header v0 image (verified by hex dump) that the v4-only
+# bootloader can't boot.
+BOARD_MKBOOTIMG_ARGS += --header_version $(BOARD_BOOTIMG_HEADER_VERSION)
 BOARD_KERNEL_CMDLINE :=
 # BOARD_KERNEL_BASE / BOARD_KERNEL_PAGESIZE are a v0-v2 boot header
 # concept and unused for header v4 — deliberately omitted, do not
