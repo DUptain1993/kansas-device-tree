@@ -244,16 +244,34 @@ BOARD_AVB_ENABLE := true
 BOARD_AVB_RECOVERY_ALGORITHM := SHA256_RSA4096
 BOARD_AVB_RECOVERY_KEY_PATH := external/avb/test/data/testkey_rsa4096.pem
 BOARD_AVB_RECOVERY_ROLLBACK_INDEX_LOCATION := 1
+# Recovery moved from boot to vendor_boot (see the boot image section
+# above) after run 27 - but the BOARD_AVB_RECOVERY_* keys above only
+# sign a recoveryimage/boot target, which this device no longer builds.
+# The actual flashed image (vendor_boot.img) was going out completely
+# unsigned, and the very first real flash attempt confirmed it: "(bootloader)
+# Preflash validation failed" from the bootloader's own AVB check, before
+# it even attempted to write the partition. Verified against several real
+# device trees using this same BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT
+# setup (including a Samsung tree with the complete flag set): vendor_boot
+# needs its own BOARD_AVB_VENDOR_BOOT_* signing block, same test key.
+# Rollback index location 2, not 1, so it doesn't collide with the
+# recovery block above (now vestigial, but left in place rather than
+# removed, since nothing here depends on deleting it).
+BOARD_AVB_VENDOR_BOOT_ALGORITHM := SHA256_RSA4096
+BOARD_AVB_VENDOR_BOOT_KEY_PATH := external/avb/test/data/testkey_rsa4096.pem
+BOARD_AVB_VENDOR_BOOT_ROLLBACK_INDEX_LOCATION := 2
 # Your stock unit already has a real, recent security patch (2025-08-01)
 # baked into AVB's rollback counter. A custom build that derives its
 # rollback index from *today's* real date can come out LOWER than
 # what's already trusted, and the bootloader will refuse to flash it
 # as a "downgrade". Forcing this to a far-future date is a known,
 # intentional community workaround (confirmed independently in two
-# other mt6835 recovery trees), not a mistake — keep it.
+# other mt6835 recovery trees), not a mistake — keep it. Same reasoning
+# applies to vendor_boot's own rollback counter, not just recovery's.
 PLATFORM_SECURITY_PATCH := 2099-12-31
 VENDOR_SECURITY_PATCH := $(PLATFORM_SECURITY_PATCH)
 BOARD_AVB_RECOVERY_ROLLBACK_INDEX := $(PLATFORM_SECURITY_PATCH_TIMESTAMP)
+BOARD_AVB_VENDOR_BOOT_ROLLBACK_INDEX := $(PLATFORM_SECURITY_PATCH_TIMESTAMP)
 
 # ------------------------------------------------------------------
 # FBE decrypt in recovery — see the long comment in the crypto section
