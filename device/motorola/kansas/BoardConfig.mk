@@ -96,9 +96,40 @@ BOARD_BOOT_HEADER_VERSION := 4
 # boot.img. Belt and suspenders now that the variable name is also right.
 BOARD_MKBOOTIMG_ARGS += --header_version $(BOARD_BOOT_HEADER_VERSION)
 BOARD_KERNEL_CMDLINE :=
-# BOARD_KERNEL_BASE / BOARD_KERNEL_PAGESIZE are a v0-v2 boot header
-# concept and unused for header v4 — deliberately omitted, do not
-# re-add them without a reason.
+# The claim that page size / load addresses are "a v0-v2 concept, unused
+# for header v4" was wrong for vendor_boot specifically — its header still
+# carries page_size/kernel_addr/ramdisk_addr/tags_addr, and mkbootimg was
+# silently filling them with generic defaults (base 0x10000000 + its own
+# default offsets) that don't match this hardware at all. First real
+# vendor_boot flash attempt (with AVB signing already fixed) still hit
+# "(bootloader) Preflash validation failed" - confirmed unrelated to AVB
+# (verification was already disabled on this unit from rooting, and a
+# Magisk-patched stock boot.img flashes fine through the same mechanism).
+# Hex-dumped the live vendor_boot_a partition directly and found every
+# one of these fields differs from what our build was producing:
+#   page_size    stock 4096   vs default 2048
+#   kernel_addr  stock 0x40000000  vs default 0x10008000
+#   ramdisk_addr stock 0x66f00000  vs default 0x11000000
+#   tags_addr    stock 0x47c80000  vs default 0x10000100
+#   dtb_size     stock 183159 bytes (real DTB present) vs 0 (none)
+# Set base to 0 and use the stock addresses directly as offsets, so
+# kernel_addr/ramdisk_addr/tags_addr/dtb_addr come out exactly matching
+# the live device. dtb_addr happens to equal tags_addr on this unit -
+# confirmed by parsing the same live header, not a typo.
+BOARD_MKBOOTIMG_ARGS += --pagesize 4096
+BOARD_MKBOOTIMG_ARGS += --base 0x00000000
+BOARD_MKBOOTIMG_ARGS += --kernel_offset 0x40000000
+BOARD_MKBOOTIMG_ARGS += --ramdisk_offset 0x66f00000
+BOARD_MKBOOTIMG_ARGS += --tags_offset 0x47c80000
+BOARD_MKBOOTIMG_ARGS += --dtb_offset 0x47c80000
+# Extracted from the live vendor_boot_a partition (dd + manual v4 header
+# parse, since this device packs it as an Android DT Table - magic
+# d7b7ab1e, same format as dtbo.img - rather than a single flat FDT).
+# Verified byte-for-byte size and magic against the live device before
+# committing. See BOARD_PREBUILT_DTBOIMAGE above for the separate,
+# unrelated dtbo partition image - this is vendor_boot's own embedded
+# dtb section, not that.
+BOARD_MKBOOTIMG_ARGS += --dtb $(DEVICE_PATH)/prebuilt/vendor_boot.dtb
 
 # by-name has no `recovery`/`recovery_a` entry on this unit, so there's
 # no separate recovery partition — confirmed, not a guess. But that does
