@@ -16,8 +16,8 @@ on:
         default: "14.1"
         required: false
       build_target:
-        description: "Make target(s). Run 24 proved 'bootimage' does NOT pull in vendor_boot on this OrangeFox build/make fork (it built only a kernel-only boot.img, no vendor_boot.img at all, despite BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT). Every real OrangeFox tree for this recovery-in-vendor_boot scheme — including another Motorola device on the identical fox_14.1 sync workflow — builds 'adbd vendorbootimage' explicitly instead."
-        default: "adbd vendorbootimage"
+        description: "Make target. A vendor_boot detour (runs 24-29) matched vendor_boot's AVB signing/header/DTB to the live device exactly and it still failed to flash on real hardware ('Preflash validation failed' on every attempt, and no known community guide for this device flashes a custom vendor_boot either) — reverted back to recovery-as-boot, which has always flashed without that rejection. bootimage is correct here again, NOT vendorbootimage."
+        default: "bootimage"
         required: false
   push:
     branches: [ "main" ]
@@ -252,7 +252,7 @@ jobs:
           # init_first_stage to PRODUCT_PACKAGES - that's what actually
           # populates $(TARGET_ROOT_OUT) in modern (system-as-root/GKI)
           # AOSP, without pulling in a full system image build.
-          mka ${{ github.event.inputs.build_target || 'adbd vendorbootimage' }} -j"$build_jobs"
+          mka ${{ github.event.inputs.build_target || 'bootimage' }} -j"$build_jobs"
 
       # Run 25 failed inside OrangeFox_A14.sh's "Fox_Before_Recovery_Image"
       # step with a cascade of "No such file or directory" under
@@ -281,15 +281,14 @@ jobs:
         working-directory: /home/runner/fox_14.1
         run: |
           mkdir -p /home/runner/out-artifact
-          # vendor_boot.img is the one that actually carries the recovery
-          # ramdisk on this device (BOARD_USES_RECOVERY_AS_BOOT=false +
-          # BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT=true in
-          # BoardConfig.mk — init_boot stays generic/untouched on this
-          # GKI 2.0 device, boot is kernel-only). boot.img/init_boot.img/
-          # recovery.img/OrangeFox's flashable *.zip are collected too in
-          # case the target list changes later.
+          # boot.img is the one that actually carries the recovery ramdisk
+          # on this device again (BOARD_USES_RECOVERY_AS_BOOT=true — a
+          # vendor_boot detour proved unflashable on real hardware, see
+          # BoardConfig.mk's boot image section for the full history).
+          # vendor_boot.img/init_boot.img/recovery.img/OrangeFox's
+          # flashable *.zip are collected too in case that changes again.
           find out/target/product/kansas -maxdepth 1 \
-            \( -name "vendor_boot.img" -o -name "init_boot.img" -o -name "recovery.img" -o -name "boot.img" -o -name "*.zip" \) \
+            \( -name "boot.img" -o -name "vendor_boot.img" -o -name "init_boot.img" -o -name "recovery.img" -o -name "*.zip" \) \
             -exec cp {} /home/runner/out-artifact/ \;
 
       - name: Upload artifact

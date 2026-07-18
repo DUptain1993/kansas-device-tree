@@ -81,82 +81,60 @@ BOARD_KERNEL_IMAGE_NAME := Image.lz4
 # TARGET_KERNEL_CROSS_COMPILE_PREFIX := aarch64-linux-gnu-
 
 # ------------------------------------------------------------------
-# Boot image / recovery-as-vendor_boot
+# Boot image / recovery-as-boot
 # ------------------------------------------------------------------
 # Confirmed by hex-dumping the live boot_a partition: magic ANDROID!,
 # header_size=1584 (0x630), header_version=4 → boot_img_hdr_v4.
 # This is the real AOSP variable name (BOARD_BOOTIMG_HEADER_VERSION,
 # which this used to be called, is not — build/make never reads it).
-# That matters more now than it did before: with recovery moved to
-# vendor_boot below, other parts of the build consult this variable
-# directly for vendor_boot's own header too, not just mkbootimg's args.
 BOARD_BOOT_HEADER_VERSION := 4
 # Still forward it explicitly — this line, not the variable above, is
 # what actually fixed the 2026-07-12 build producing a header v0
-# boot.img. Belt and suspenders now that the variable name is also right.
+# boot.img.
 BOARD_MKBOOTIMG_ARGS += --header_version $(BOARD_BOOT_HEADER_VERSION)
 BOARD_KERNEL_CMDLINE :=
-# The claim that page size / load addresses are "a v0-v2 concept, unused
-# for header v4" was wrong for vendor_boot specifically — its header still
-# carries page_size/kernel_addr/ramdisk_addr/tags_addr, and mkbootimg was
-# silently filling them with generic defaults (base 0x10000000 + its own
-# default offsets) that don't match this hardware at all. First real
-# vendor_boot flash attempt (with AVB signing already fixed) still hit
-# "(bootloader) Preflash validation failed" - confirmed unrelated to AVB
-# (verification was already disabled on this unit from rooting, and a
-# Magisk-patched stock boot.img flashes fine through the same mechanism).
-# Hex-dumped the live vendor_boot_a partition directly and found every
-# one of these fields differs from what our build was producing:
-#   page_size    stock 4096   vs default 2048
-#   kernel_addr  stock 0x40000000  vs default 0x10008000
-#   ramdisk_addr stock 0x66f00000  vs default 0x11000000
-#   tags_addr    stock 0x47c80000  vs default 0x10000100
-#   dtb_size     stock 183159 bytes (real DTB present) vs 0 (none)
-# Set base to 0 and use the stock addresses directly as offsets, so
-# kernel_addr/ramdisk_addr/tags_addr/dtb_addr come out exactly matching
-# the live device. dtb_addr happens to equal tags_addr on this unit -
-# confirmed by parsing the same live header, not a typo.
-BOARD_MKBOOTIMG_ARGS += --pagesize 4096
-BOARD_MKBOOTIMG_ARGS += --base 0x00000000
-BOARD_MKBOOTIMG_ARGS += --kernel_offset 0x40000000
-BOARD_MKBOOTIMG_ARGS += --ramdisk_offset 0x66f00000
-BOARD_MKBOOTIMG_ARGS += --tags_offset 0x47c80000
-BOARD_MKBOOTIMG_ARGS += --dtb_offset 0x47c80000
-# Extracted from the live vendor_boot_a partition (dd + manual v4 header
-# parse, since this device packs it as an Android DT Table - magic
-# d7b7ab1e, same format as dtbo.img - rather than a single flat FDT).
-# Verified byte-for-byte size and magic against the live device before
-# committing. See BOARD_PREBUILT_DTBOIMAGE above for the separate,
-# unrelated dtbo partition image - this is vendor_boot's own embedded
-# dtb section, not that.
-BOARD_MKBOOTIMG_ARGS += --dtb $(DEVICE_PATH)/prebuilt/vendor_boot.dtb
+# BOARD_KERNEL_BASE / page size / load-address overrides are a v0-v2
+# boot header concept and genuinely unused for header v4 boot.img
+# (boot_img_hdr_v3/v4 doesn't carry page_size/kernel_addr/ramdisk_addr/
+# tags_addr as header fields at all - unlike vendor_boot's header,
+# which does; that distinction is what the vendor_boot detour below
+# was built on and got wrong to begin with). Confirmed empirically too:
+# flashing boot.img with plain defaults has never once hit a
+# "Preflash validation failed" rejection, across every attempt.
+# Deliberately omitted, do not re-add without a reason.
 
-# by-name has no `recovery`/`recovery_a` entry on this unit, so there's
-# no separate recovery partition — confirmed, not a guess. But that does
-# NOT mean recovery belongs in `boot`: this is a genuine GKI 2.0 split
-# device (separate init_boot_a/b, AND a real vendor_boot_a/b) where
-# init_boot is meant to stay 100% generic/untouched — AOSP's build
-# system has no "pack recovery into init_boot" option at all;
-# board_config.mk only offers boot XOR vendor_boot. Verified against a
-# real, shipped OrangeFox tree for an equivalent GKI-2.0 device
-# (separate init_boot + vendor_boot, same shape as this one): recovery
-# goes into vendor_boot, via BOARD_USES_RECOVERY_AS_BOOT := false below,
-# not true. The previous setting here (true) packed a combined
-# kernel+ramdisk image into `boot` instead — a 64MB image exactly
-# matching BOARD_BOOTIMAGE_PARTITION_SIZE, which flashed fine but did
-# nothing on the real device, because boot_a's ramdisk really is empty
-# and unused on this hardware (confirmed above); the bootloader just
-# kept booting stock recovery out of init_boot regardless of what was
-# in boot.
-BOARD_USES_RECOVERY_AS_BOOT := false
-BOARD_USES_GENERIC_KERNEL_IMAGE := true
-BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT := true
-BOARD_INCLUDE_RECOVERY_RAMDISK_IN_VENDOR_BOOT := true
-BOARD_EXCLUDE_KERNEL_FROM_RECOVERY_IMAGE := false
+# History: this device has no separate `recovery`/`recovery_a` partition
+# (confirmed) and a genuine GKI 2.0 split (separate init_boot_a/b AND a
+# real vendor_boot_a/b). AOSP only supports recovery-as-boot XOR
+# recovery-in-vendor_boot, never recovery-in-init_boot. A whole detour
+# was spent moving recovery into vendor_boot (matching AVB signing, page
+# size, load addresses, and even the embedded DTB exactly to the live
+# device, verified byte-for-byte) - and it still hit "(bootloader)
+# Preflash validation failed" on every single flash attempt, unrelated
+# to AVB (verification was already disabled on this rooted unit, and
+# the exact same disable-vbmeta sequence that lets stock/Magisk-patched
+# init_boot and boot flash fine did nothing for vendor_boot here). Two
+# independent community guides for this exact device (root via
+# init_boot, GSI via system) both deliberately avoid ever touching
+# vendor_boot - neither documents a way to flash a custom one. That's
+# strong evidence vendor_boot has protection on this device (likely a
+# MediaTek preloader-level check below Android's AVB entirely, which
+# --disable-verification has no effect on) that isn't bypassable by
+# anything controllable from a device tree.
+#
+# boot.img, by contrast, has flashed successfully without a validation
+# rejection on every attempt so far - the only prior failure mode there
+# ("no command" stock recovery instead of OrangeFox) is fully explained
+# by the recovery/root/system/etc population bug fixed separately in
+# this file's history, not by boot.img being rejected. Back to
+# BOARD_USES_RECOVERY_AS_BOOT := true - the setting this device actually
+# needs, not the vendor_boot scheme a same-shaped-looking reference tree
+# happened to use.
+BOARD_USES_RECOVERY_AS_BOOT := true
 
-# init_boot itself stays generic/stock and unmodified by this build —
-# this size is only here for AB_OTA_PARTITIONS/OTA accounting of the
-# real partition, not because this tree packs anything into it.
+# This device has a SEPARATE init_boot_a/init_boot_b partition (GKI 2.0
+# split) that stays 100% generic/untouched by this build - this size is
+# only here for AB_OTA_PARTITIONS/OTA accounting of the real partition.
 BOARD_INIT_BOOT_IMAGE_PARTITION_SIZE := 0x00800000
 
 # ------------------------------------------------------------------
@@ -275,34 +253,22 @@ BOARD_AVB_ENABLE := true
 BOARD_AVB_RECOVERY_ALGORITHM := SHA256_RSA4096
 BOARD_AVB_RECOVERY_KEY_PATH := external/avb/test/data/testkey_rsa4096.pem
 BOARD_AVB_RECOVERY_ROLLBACK_INDEX_LOCATION := 1
-# Recovery moved from boot to vendor_boot (see the boot image section
-# above) after run 27 - but the BOARD_AVB_RECOVERY_* keys above only
-# sign a recoveryimage/boot target, which this device no longer builds.
-# The actual flashed image (vendor_boot.img) was going out completely
-# unsigned, and the very first real flash attempt confirmed it: "(bootloader)
-# Preflash validation failed" from the bootloader's own AVB check, before
-# it even attempted to write the partition. Verified against several real
-# device trees using this same BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT
-# setup (including a Samsung tree with the complete flag set): vendor_boot
-# needs its own BOARD_AVB_VENDOR_BOOT_* signing block, same test key.
-# Rollback index location 2, not 1, so it doesn't collide with the
-# recovery block above (now vestigial, but left in place rather than
-# removed, since nothing here depends on deleting it).
-BOARD_AVB_VENDOR_BOOT_ALGORITHM := SHA256_RSA4096
-BOARD_AVB_VENDOR_BOOT_KEY_PATH := external/avb/test/data/testkey_rsa4096.pem
-BOARD_AVB_VENDOR_BOOT_ROLLBACK_INDEX_LOCATION := 2
+# A vendor_boot detour (see the boot image section above for the full
+# story - moved recovery there, matched its AVB signing/header/DTB to
+# the live device exactly, still got rejected on every flash attempt)
+# needed a parallel BOARD_AVB_VENDOR_BOOT_* block here too. Recovery is
+# back to boot now, so it's removed - the block above is the only one
+# that matters again.
 # Your stock unit already has a real, recent security patch (2025-08-01)
 # baked into AVB's rollback counter. A custom build that derives its
 # rollback index from *today's* real date can come out LOWER than
 # what's already trusted, and the bootloader will refuse to flash it
 # as a "downgrade". Forcing this to a far-future date is a known,
 # intentional community workaround (confirmed independently in two
-# other mt6835 recovery trees), not a mistake — keep it. Same reasoning
-# applies to vendor_boot's own rollback counter, not just recovery's.
+# other mt6835 recovery trees), not a mistake — keep it.
 PLATFORM_SECURITY_PATCH := 2099-12-31
 VENDOR_SECURITY_PATCH := $(PLATFORM_SECURITY_PATCH)
 BOARD_AVB_RECOVERY_ROLLBACK_INDEX := $(PLATFORM_SECURITY_PATCH_TIMESTAMP)
-BOARD_AVB_VENDOR_BOOT_ROLLBACK_INDEX := $(PLATFORM_SECURITY_PATCH_TIMESTAMP)
 
 # ------------------------------------------------------------------
 # FBE decrypt in recovery — see the long comment in the crypto section
