@@ -254,6 +254,29 @@ jobs:
           # AOSP, without pulling in a full system image build.
           mka ${{ github.event.inputs.build_target || 'adbd vendorbootimage' }} -j"$build_jobs"
 
+      # Run 25 failed inside OrangeFox_A14.sh's "Fox_Before_Recovery_Image"
+      # step with a cascade of "No such file or directory" under
+      # recovery/root/system/ (magiskboot symlink, bash.bashrc, and
+      # fatally system/etc/recovery.fstab) - pointing at recovery/root/system
+      # never getting populated with real content before that script runs.
+      # The runner is torn down the instant the job fails, so there's no way
+      # to inspect out/ post-mortem - dump the exact state of root/,
+      # recovery/root/, and system/ (TARGET_OUT) here, on failure, so the
+      # next run's log has real data instead of another guess.
+      - name: Diagnose recovery root population on failure
+        if: failure()
+        working-directory: /home/runner/fox_14.1
+        run: |
+          echo "::group::out/target/product/kansas/root"
+          find out/target/product/kansas/root -maxdepth 4 2>&1 || echo "(root/ does not exist)"
+          echo "::endgroup::"
+          echo "::group::out/target/product/kansas/system (TARGET_OUT)"
+          find out/target/product/kansas/system -maxdepth 3 2>&1 || echo "(system/ does not exist)"
+          echo "::endgroup::"
+          echo "::group::out/target/product/kansas/recovery/root"
+          find out/target/product/kansas/recovery/root -maxdepth 4 2>&1 || echo "(recovery/root/ does not exist)"
+          echo "::endgroup::"
+
       - name: Collect output artifact
         working-directory: /home/runner/fox_14.1
         run: |
