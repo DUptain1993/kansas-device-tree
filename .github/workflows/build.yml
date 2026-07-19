@@ -288,6 +288,53 @@ jobs:
           find out/target/product/kansas/recovery/root -maxdepth 4 2>&1 || echo "(recovery/root/ does not exist)"
           echo "::endgroup::"
 
+      # Run 32's boot.img correctly carries a fully-permissioned OrangeFox
+      # ramdisk (verified via cpio -tv on the artifact: /sbin/* all
+      # 0755), and its checksum was confirmed present in the live
+      # device's active boot_a partition after flashing - yet the device
+      # still only ever shows stock recovery's "No command" screen.
+      # Direct inspection of our own packed ramdisk found /init is a
+      # dangling symlink to /system/bin/init, which does not exist
+      # anywhere in the ramdisk - this is the standard AOSP recipe for a
+      # NORMAL-boot ramdisk (expects a real /system already mounted),
+      # not a standalone recovery ramdisk. Combined with stock boot_a
+      # having an empty ramdisk, and this device's own root method
+      # (Magisk) patching init_boot rather than boot, the real
+      # conclusion is: this device's bootloader boots from init_boot's
+      # ramdisk, not boot's - boot's ramdisk is never read at all here.
+      # AOSP has no BoardConfig flag for "pack recovery into init_boot"
+      # (unlike BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT for
+      # vendor_boot), so build one directly: reuse the exact same
+      # ramdisk-recovery.img the normal boot.img build already produces
+      # (same content, already verified correct) and repack it with no
+      # kernel, matching init_boot's own header/size/signing shape.
+      # BOARD_INIT_BOOT_IMAGE_PARTITION_SIZE (0x00800000 = 8388608)
+      # matches the live device's real init_boot_a size exactly, per
+      # fastboot's own rejection of the oversized full boot.img attempt.
+      - name: Build init_boot.img from the same verified recovery ramdisk
+        working-directory: /home/runner/fox_14.1
+        run: |
+          set -euo pipefail
+          OUT=out/target/product/kansas
+          HOSTBIN=out/host/linux-x86/bin
+          ls -la "$OUT/ramdisk-recovery.img"
+          "$HOSTBIN/mkbootimg" \
+            --ramdisk "$OUT/ramdisk-recovery.img" \
+            --header_version 4 \
+            --os_version 14 \
+            --os_patch_level 2099-12-31 \
+            --cmdline "twrpfastboot=1" \
+            --output "$OUT/init_boot.img"
+          "$HOSTBIN/avbtool" add_hash_footer \
+            --image "$OUT/init_boot.img" \
+            --partition_name init_boot \
+            --partition_size 0x00800000 \
+            --algorithm SHA256_RSA4096 \
+            --key external/avb/test/data/testkey_rsa4096.pem \
+            --rollback_index_location 1 \
+            --rollback_index 0
+          ls -la "$OUT/init_boot.img"
+
       - name: Collect output artifact
         working-directory: /home/runner/fox_14.1
         run: |
@@ -296,8 +343,11 @@ jobs:
           # on this device again (BOARD_USES_RECOVERY_AS_BOOT=true — a
           # vendor_boot detour proved unflashable on real hardware, see
           # BoardConfig.mk's boot image section for the full history).
-          # vendor_boot.img/init_boot.img/recovery.img/OrangeFox's
-          # flashable *.zip are collected too in case that changes again.
+          # init_boot.img (built in the step above) is the current best
+          # candidate for what the device's bootloader actually reads —
+          # see that step's comment. vendor_boot.img/recovery.img/
+          # OrangeFox's flashable *.zip are collected too in case that
+          # changes again.
           find out/target/product/kansas -maxdepth 1 \
             \( -name "boot.img" -o -name "vendor_boot.img" -o -name "init_boot.img" -o -name "recovery.img" -o -name "*.zip" \) \
             -exec cp {} /home/runner/out-artifact/ \;
