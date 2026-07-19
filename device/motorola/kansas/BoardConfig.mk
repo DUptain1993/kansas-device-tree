@@ -171,6 +171,22 @@ TW_INCLUDE_REPACKTOOLS := true
 # this kind of OEM/vendor-specific extra root directory.
 BOARD_ROOT_EXTRA_FOLDERS += sbin
 
+# Run 30's boot.img flashed fine but never showed the OrangeFox UI (just
+# the stock "No command" screen) — root-caused via `cpio -tv` on the
+# built ramdisk: every /sbin/* file (bash, magiskboot, zip, foxstart.sh —
+# OrangeFox's own launcher) was packed as -rw-r--r--, non-executable.
+# OrangeFox's Fox_Before_Recovery_Image hook does chmod 0755 these on
+# disk, but that's irrelevant: the AOSP recovery-ramdisk rule invokes
+# `mkbootfs -d $(TARGET_OUT) ...` (build/make/core/Makefile), and the
+# "-d" flag makes mkbootfs discard real on-disk stat() mode entirely and
+# look up uid/gid/mode/caps via fs_config() (system/core/libcutils/
+# fs_config.cpp) instead. fs_config()'s canned table only recognizes
+# stock AOSP paths (system/bin/*, init*, ...); our OrangeFox/TWRP-style
+# /sbin/* layout matches nothing and falls through to its terminal
+# default of 0644 root:root. TARGET_FS_CONFIG_GEN is AOSP's standard
+# device-tree hook for extending that table — see config.fs.
+TARGET_FS_CONFIG_GEN := $(DEVICE_PATH)/config.fs
+
 # ------------------------------------------------------------------
 # Filesystem / block devices
 # ------------------------------------------------------------------
