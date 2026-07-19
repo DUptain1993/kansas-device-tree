@@ -88,3 +88,23 @@ $(call inherit-product, $(SRC_TARGET_DIR)/product/emulated_storage.mk)
 # which this recovery-only tree doesn't inherit — add it directly.
 PRODUCT_PACKAGES += \
     init.environ.rc
+
+# Run 31's boot.img still packed every /sbin/* file (OrangeFox's own
+# launcher foxstart.sh, bash, magiskboot, zip, ...) as non-executable
+# (0644) despite BoardConfig.mk's TARGET_FS_CONFIG_GEN := config.fs
+# (with a [sbin/*] mode:0755 rule) already being in place. Root-caused:
+# TARGET_FS_CONFIG_GEN doesn't compile a table directly into libcutils —
+# it only supplies the *input* to the fs_config_files_system /
+# fs_config_dirs_system build modules (build/make/tools/fs_config/
+# Android.mk), which generate $(TARGET_OUT)/etc/fs_config_files. That's
+# the file mkbootfs's `-d $(TARGET_OUT)` flag actually opens at runtime
+# (system/core/libcutils/fs_config.cpp's fs_config_open()) before
+# falling back to its hardcoded (no-sbin-entry, 0644-default) table.
+# Those two modules are normally pulled in by base_system.mk, which —
+# like init.environ.rc above — this recovery-only tree doesn't inherit,
+# so the module was simply never built, the file never existed, and
+# config.fs's rule was silently never consulted. Add them directly, same
+# pattern as init.environ.rc.
+PRODUCT_PACKAGES += \
+    fs_config_files_system \
+    fs_config_dirs_system

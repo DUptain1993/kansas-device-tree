@@ -252,7 +252,18 @@ jobs:
           # init_first_stage to PRODUCT_PACKAGES - that's what actually
           # populates $(TARGET_ROOT_OUT) in modern (system-as-root/GKI)
           # AOSP, without pulling in a full system image build.
-          mka ${{ github.event.inputs.build_target || 'bootimage' }} -j"$build_jobs"
+          # fs_config_files_system/fs_config_dirs_system (added to
+          # PRODUCT_PACKAGES in device.mk, see its comment for why) have
+          # no formal Makefile dependency edge pulling them in ahead of
+          # recovery_ramdisk's mkbootfs -d $(TARGET_OUT) call, which is
+          # what actually reads their generated output at runtime to fix
+          # /sbin/* permissions. Request them explicitly in the same mka
+          # invocation so ninja builds them - recovery_ramdisk is one of
+          # the very last steps in this build (5293+/5296 in prior runs),
+          # and these are small standalone leaf modules, so in practice
+          # they finish well before mkbootfs runs even without a real
+          # graph edge.
+          mka fs_config_files_system fs_config_dirs_system ${{ github.event.inputs.build_target || 'bootimage' }} -j"$build_jobs"
 
       # Run 25 failed inside OrangeFox_A14.sh's "Fox_Before_Recovery_Image"
       # step with a cascade of "No such file or directory" under
