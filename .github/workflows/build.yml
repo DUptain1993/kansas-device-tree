@@ -317,6 +317,22 @@ jobs:
           set -euo pipefail
           OUT=out/target/product/kansas
           HOSTBIN=out/host/linux-x86/bin
+          # ramdisk-recovery.img only exists under BOARD_USES_RECOVERY_AS_BOOT
+          # (recovery packed into boot). Run 34 (build_target "bootimage
+          # vendorbootimage" with BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT
+          # active) proved it: the same recovery ramdisk content instead
+          # lands at obj/PACKAGING/vendor_boot_intermediates/
+          # vendor_ramdisk.cpio.gz as part of vendor_boot's own packaging,
+          # and this file is simply never created - killing this whole job
+          # (and skipping artifact collection with it, losing boot.img AND
+          # vendor_boot.img even though "Build recovery" above had already
+          # built both successfully). init_boot.img isn't what's under test
+          # when vendor_boot is active, so skip gracefully instead of
+          # hard-failing the run over a file this configuration never makes.
+          if [ ! -f "$OUT/ramdisk-recovery.img" ]; then
+            echo "ramdisk-recovery.img not present (expected under BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT) - skipping init_boot.img build"
+            exit 0
+          fi
           ls -la "$OUT/ramdisk-recovery.img"
           "$HOSTBIN/mkbootimg" \
             --ramdisk "$OUT/ramdisk-recovery.img" \
