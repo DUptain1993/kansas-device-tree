@@ -16,8 +16,8 @@ on:
         default: "14.1"
         required: false
       build_target:
-        description: "Make target. A vendor_boot detour (runs 24-29) matched vendor_boot's AVB signing/header/DTB to the live device exactly and it still failed to flash on real hardware ('Preflash validation failed' on every attempt, and no known community guide for this device flashes a custom vendor_boot either) — reverted back to recovery-as-boot, which has always flashed without that rejection. bootimage is correct here again, NOT vendorbootimage."
-        default: "bootimage"
+        description: "Make target(s). vendor_boot is confirmed the partition recovery mode actually reads on this device (boot/init_boot both proven to have zero effect on real hardware, via checksum-verified flashes and multiple recovery-entry methods). vendorbootimage produces the vendor_ramdisk.cpio.gz intermediate the 'Build vendor_boot.img with the real stock platform ramdisk fragment' step consumes; bootimage is kept alongside it for the plain kernel+generic-ramdisk boot.img, unrelated to recovery now."
+        default: "bootimage vendorbootimage"
         required: false
   push:
     branches: [ "main" ]
@@ -288,84 +288,104 @@ jobs:
           find out/target/product/kansas/recovery/root -maxdepth 4 2>&1 || echo "(recovery/root/ does not exist)"
           echo "::endgroup::"
 
-      # Run 32's boot.img correctly carries a fully-permissioned OrangeFox
-      # ramdisk (verified via cpio -tv on the artifact: /sbin/* all
-      # 0755), and its checksum was confirmed present in the live
-      # device's active boot_a partition after flashing - yet the device
-      # still only ever shows stock recovery's "No command" screen.
-      # Direct inspection of our own packed ramdisk found /init is a
-      # dangling symlink to /system/bin/init, which does not exist
-      # anywhere in the ramdisk - this is the standard AOSP recipe for a
-      # NORMAL-boot ramdisk (expects a real /system already mounted),
-      # not a standalone recovery ramdisk. Combined with stock boot_a
-      # having an empty ramdisk, and this device's own root method
-      # (Magisk) patching init_boot rather than boot, the real
-      # conclusion is: this device's bootloader boots from init_boot's
-      # ramdisk, not boot's - boot's ramdisk is never read at all here.
-      # AOSP has no BoardConfig flag for "pack recovery into init_boot"
-      # (unlike BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT for
-      # vendor_boot), so build one directly: reuse the exact same
-      # ramdisk-recovery.img the normal boot.img build already produces
-      # (same content, already verified correct) and repack it with no
-      # kernel, matching init_boot's own header/size/signing shape.
-      # BOARD_INIT_BOOT_IMAGE_PARTITION_SIZE (0x00800000 = 8388608)
-      # matches the live device's real init_boot_a size exactly, per
-      # fastboot's own rejection of the oversized full boot.img attempt.
-      - name: Build init_boot.img from the same verified recovery ramdisk
+      # boot.img and init_boot.img were both extensively tested on real
+      # hardware (checksum-verified content present in the live device's
+      # active partition, correct /sbin permissions) and BOTH proven to
+      # have zero effect on recovery-mode behavior - the bootloader
+      # simply doesn't read either partition's ramdisk here, confirmed
+      # via fastboot reboot recovery AND the bootloader's own native
+      # "Recovery mode" menu entry. vendor_boot is the partition that
+      # actually matters (confirmed: flashing custom content there
+      # changes behavior from "ignored" to "crashes/hangs", unlike
+      # boot/init_boot). See BoardConfig.mk's boot image section for the
+      # full history - init_boot.img is no longer built here.
+      #
+      # vendor_boot's own AOSP-built ramdisk table (BOARD_MOVE_
+      # RECOVERY_RESOURCES_TO_VENDOR_BOOT) is a genuine v4 two-fragment
+      # table (platform + recovery) - correct in shape - but the platform
+      # fragment comes out completely empty: this device tree has never
+      # had real vendor blobs pulled in (no vendor/motorola/kansas/
+      # kansas-vendor.mk), so there's nothing to populate it from.
+      # Confirmed on real hardware via magiskboot unpack --vendor: an
+      # empty platform fragment (missing dozens of essential kernel
+      # modules - WiFi, MediaTek exception handling, storage drivers -
+      # that recovery mode needs exactly as much as normal boot) causes
+      # an immediate silent kernel panic/bootloop. A hand-built hybrid
+      # (stock's real platform ramdisk + our recovery fragment, done via
+      # on-device magiskboot repack) got past the crash but hung instead
+      # - likely a construction detail of that specific repack, since a
+      # third-party TWRP build for this exact device (Hovatek's builder,
+      # given the same stock boot.img + vendor_boot.img as input) proved
+      # a correctly-built version of this same combination genuinely
+      # boots into a working recovery UI on this hardware (cosmetic
+      # issues only - no touch, wrong DPI/pixel-format rendering - both
+      # expected from a generic, non-device-specific TWRP build).
+      #
+      # Fix: build vendor_boot.img directly via mkbootimg's real
+      # multi-fragment syntax (--ramdisk_type/--ramdisk_name/
+      # --vendor_ramdisk_fragment, repeatable) instead of relying on
+      # BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT's auto-populated
+      # (and, for the platform fragment, empty) result - combining:
+      #   - the real stock platform ramdisk, extracted from the live
+      #     device's vendor_boot_a and committed as prebuilt/
+      #     vendor_ramdisk_platform.lz4 (verified exact size 27,591,883
+      #     bytes, lz4_legacy compressed, matching the live device's own
+      #     header field exactly)
+      #   - our own OrangeFox recovery ramdisk - the vendor_ramdisk.cpio.gz
+      #     intermediate the standard build already correctly produces
+      #     under BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT (confirmed
+      #     via cpio -tv that its /sbin/* permissions are correct)
+      #   - stock's real vendor cmdline (bootopt=64S3,32N2,64N2 mem.
+      #     enable_mglru=1 loglevel=4 initcall_debug=0 - MediaTek DRAM/
+      #     kernel params), which this device tree's build otherwise
+      #     leaves empty
+      # Same DTB, page size, and load addresses already byte-verified
+      # against the live device (BoardConfig.mk's BOARD_MKBOOTIMG_ARGS).
+      - name: Build vendor_boot.img with the real stock platform ramdisk fragment
         working-directory: /home/runner/fox_14.1
         run: |
           set -euo pipefail
           OUT=out/target/product/kansas
           HOSTBIN=out/host/linux-x86/bin
-          # ramdisk-recovery.img only exists under BOARD_USES_RECOVERY_AS_BOOT
-          # (recovery packed into boot). Run 34 (build_target "bootimage
-          # vendorbootimage" with BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT
-          # active) proved it: the same recovery ramdisk content instead
-          # lands at obj/PACKAGING/vendor_boot_intermediates/
-          # vendor_ramdisk.cpio.gz as part of vendor_boot's own packaging,
-          # and this file is simply never created - killing this whole job
-          # (and skipping artifact collection with it, losing boot.img AND
-          # vendor_boot.img even though "Build recovery" above had already
-          # built both successfully). init_boot.img isn't what's under test
-          # when vendor_boot is active, so skip gracefully instead of
-          # hard-failing the run over a file this configuration never makes.
-          if [ ! -f "$OUT/ramdisk-recovery.img" ]; then
-            echo "ramdisk-recovery.img not present (expected under BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT) - skipping init_boot.img build"
-            exit 0
-          fi
-          ls -la "$OUT/ramdisk-recovery.img"
+          RECOVERY_FRAGMENT="$OUT/obj/PACKAGING/vendor_boot_intermediates/vendor_ramdisk.cpio.gz"
+          PLATFORM_FRAGMENT=device/motorola/kansas/prebuilt/vendor_ramdisk_platform.lz4
+          DTB=device/motorola/kansas/prebuilt/vendor_boot.dtb
+          ls -la "$RECOVERY_FRAGMENT" "$PLATFORM_FRAGMENT" "$DTB"
           "$HOSTBIN/mkbootimg" \
-            --ramdisk "$OUT/ramdisk-recovery.img" \
             --header_version 4 \
-            --os_version 14 \
-            --os_patch_level 2099-12-31 \
-            --cmdline "twrpfastboot=1" \
-            --output "$OUT/init_boot.img"
+            --base 0x00000000 \
+            --pagesize 4096 \
+            --kernel_offset 0x40000000 \
+            --ramdisk_offset 0x66f00000 \
+            --tags_offset 0x47c80000 \
+            --dtb_offset 0x47c80000 \
+            --dtb "$DTB" \
+            --vendor_cmdline "bootopt=64S3,32N2,64N2 mem.enable_mglru=1 loglevel=4 initcall_debug=0" \
+            --ramdisk_type platform --ramdisk_name "" --vendor_ramdisk_fragment "$PLATFORM_FRAGMENT" \
+            --ramdisk_type recovery --ramdisk_name "recovery" --vendor_ramdisk_fragment "$RECOVERY_FRAGMENT" \
+            --vendor_boot "$OUT/vendor_boot.img"
           "$HOSTBIN/avbtool" add_hash_footer \
-            --image "$OUT/init_boot.img" \
-            --partition_name init_boot \
-            --partition_size 0x00800000 \
+            --image "$OUT/vendor_boot.img" \
+            --partition_name vendor_boot \
+            --partition_size 0x04000000 \
             --algorithm SHA256_RSA4096 \
             --key external/avb/test/data/testkey_rsa4096.pem \
-            --rollback_index_location 1 \
+            --rollback_index_location 2 \
             --rollback_index 0
-          ls -la "$OUT/init_boot.img"
+          ls -la "$OUT/vendor_boot.img"
 
       - name: Collect output artifact
         working-directory: /home/runner/fox_14.1
         run: |
           mkdir -p /home/runner/out-artifact
-          # boot.img is the one that actually carries the recovery ramdisk
-          # on this device again (BOARD_USES_RECOVERY_AS_BOOT=true — a
-          # vendor_boot detour proved unflashable on real hardware, see
-          # BoardConfig.mk's boot image section for the full history).
-          # init_boot.img (built in the step above) is the current best
-          # candidate for what the device's bootloader actually reads —
-          # see that step's comment. vendor_boot.img/recovery.img/
-          # OrangeFox's flashable *.zip are collected too in case that
-          # changes again.
+          # vendor_boot.img (rebuilt with the real platform ramdisk
+          # fragment in the step above) is the current best candidate for
+          # what the device's bootloader actually reads for recovery mode
+          # - see that step's comment for the full history. boot.img/
+          # recovery.img/OrangeFox's flashable *.zip are collected too in
+          # case that changes again.
           find out/target/product/kansas -maxdepth 1 \
-            \( -name "boot.img" -o -name "vendor_boot.img" -o -name "init_boot.img" -o -name "recovery.img" -o -name "*.zip" \) \
+            \( -name "boot.img" -o -name "vendor_boot.img" -o -name "recovery.img" -o -name "*.zip" \) \
             -exec cp {} /home/runner/out-artifact/ \;
 
       - name: Upload artifact
