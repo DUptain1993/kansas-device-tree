@@ -347,7 +347,17 @@ jobs:
           set -euo pipefail
           OUT=out/target/product/kansas
           HOSTBIN=out/host/linux-x86/bin
-          RECOVERY_FRAGMENT="$OUT/obj/PACKAGING/vendor_boot_intermediates/vendor_ramdisk.cpio.gz"
+          # NOT obj/PACKAGING/vendor_boot_intermediates/vendor_ramdisk.cpio.gz -
+          # that's the DEFAULT/platform ramdisk build attempt, which fails
+          # identically to the empty-platform-fragment bug this whole step
+          # exists to fix ("mkbootfs: cannot open directory '.../vendor_ramdisk':
+          # No such file or directory", confirmed in run 36's log - no real
+          # vendor blobs to source it from, same root cause as before) and
+          # produces a 20-byte empty gzip stream, not real content. OrangeFox's
+          # actual recovery content lands at this different intermediate path
+          # instead, confirmed via the same log right after "Building the
+          # recovery image, using the official AOSP recovery image builder".
+          RECOVERY_FRAGMENT="$OUT/obj/PACKAGING/vendor_ramdisk_fragments_intermediates/recovery.cpio.gz"
           PLATFORM_FRAGMENT=device/motorola/kansas/prebuilt/vendor_ramdisk_platform.lz4
           DTB=device/motorola/kansas/prebuilt/vendor_boot.dtb
           ls -la "$RECOVERY_FRAGMENT" "$PLATFORM_FRAGMENT" "$DTB"
