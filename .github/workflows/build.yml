@@ -357,10 +357,40 @@ jobs:
           # actual recovery content lands at this different intermediate path
           # instead, confirmed via the same log right after "Building the
           # recovery image, using the official AOSP recovery image builder".
-          RECOVERY_FRAGMENT="$OUT/obj/PACKAGING/vendor_ramdisk_fragments_intermediates/recovery.cpio.gz"
+          RECOVERY_FRAGMENT_GZ="$OUT/obj/PACKAGING/vendor_ramdisk_fragments_intermediates/recovery.cpio.gz"
           PLATFORM_FRAGMENT=device/motorola/kansas/prebuilt/vendor_ramdisk_platform.lz4
           DTB=device/motorola/kansas/prebuilt/vendor_boot.dtb
-          ls -la "$RECOVERY_FRAGMENT" "$PLATFORM_FRAGMENT" "$DTB"
+          ls -la "$RECOVERY_FRAGMENT_GZ" "$PLATFORM_FRAGMENT" "$DTB"
+          # Run 37's image was structurally perfect (correct 2-entry table,
+          # real content in both fragments, right cmdline/DTB/permissions)
+          # yet the device STILL fell back to the stock "No command"
+          # recovery. Side-by-side magiskboot unpack of run 37's image vs
+          # the one third-party build proven to boot a recovery UI on this
+          # exact device (Hovatek's) found exactly three differences, one
+          # decisive: Hovatek's recovery fragment is lz4_legacy while ours
+          # was gzip (AOSP's intermediate is a .cpio.gz). EVERYTHING this
+          # device ever feeds its kernel is lz4_legacy (Image.lz4,
+          # init_boot's ramdisk, stock vendor_boot's ramdisk, both Hovatek
+          # fragments) - MediaTek kernels are commonly built with only LZ4
+          # initramfs decompression (CONFIG_RD_GZIP trimmed), and that
+          # single assumption explains every prior on-device result: run 35
+          # (empty platform + gzip recovery = kernel can unpack nothing ->
+          # instant panic loop) and run 37 (lz4 platform + gzip recovery =
+          # platform content boots, recovery fragment silently unreadable ->
+          # stock "No command"). Recompress the recovery fragment as
+          # lz4_legacy (lz4 -l). The other two deltas from the working
+          # image are matched too: "buildvariant=eng" appended to the
+          # cmdline, and NO avbtool hash footer (Hovatek's working image
+          # has none; AVB verification is disabled on the target unit, and
+          # converging on the known-good configuration exactly beats
+          # keeping a cosmetic footer nothing validates).
+          RECOVERY_FRAGMENT="$OUT/recovery_fragment.cpio.lz4"
+          LZ4=prebuilts/build-tools/linux-x86/bin/lz4
+          [ -x "$LZ4" ] || LZ4=$(command -v lz4)
+          echo "Using lz4 at: $LZ4"
+          gunzip -c "$RECOVERY_FRAGMENT_GZ" | "$LZ4" -l -9 > "$RECOVERY_FRAGMENT"
+          ls -la "$RECOVERY_FRAGMENT"
+          python3 -c "d=open('$RECOVERY_FRAGMENT','rb').read(4); assert d==bytes.fromhex('02214c18'), f'not lz4_legacy magic: {d.hex()}'; print('lz4_legacy magic OK')"
           "$HOSTBIN/mkbootimg" \
             --header_version 4 \
             --base 0x00000000 \
@@ -370,18 +400,10 @@ jobs:
             --tags_offset 0x47c80000 \
             --dtb_offset 0x47c80000 \
             --dtb "$DTB" \
-            --vendor_cmdline "bootopt=64S3,32N2,64N2 mem.enable_mglru=1 loglevel=4 initcall_debug=0" \
+            --vendor_cmdline "bootopt=64S3,32N2,64N2 mem.enable_mglru=1 loglevel=4 initcall_debug=0 buildvariant=eng" \
             --ramdisk_type platform --ramdisk_name "" --vendor_ramdisk_fragment "$PLATFORM_FRAGMENT" \
             --ramdisk_type recovery --ramdisk_name "recovery" --vendor_ramdisk_fragment "$RECOVERY_FRAGMENT" \
             --vendor_boot "$OUT/vendor_boot.img"
-          "$HOSTBIN/avbtool" add_hash_footer \
-            --image "$OUT/vendor_boot.img" \
-            --partition_name vendor_boot \
-            --partition_size 0x04000000 \
-            --algorithm SHA256_RSA4096 \
-            --key external/avb/test/data/testkey_rsa4096.pem \
-            --rollback_index_location 2 \
-            --rollback_index 0
           ls -la "$OUT/vendor_boot.img"
 
       - name: Collect output artifact
