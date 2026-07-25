@@ -358,39 +358,77 @@ jobs:
           # instead, confirmed via the same log right after "Building the
           # recovery image, using the official AOSP recovery image builder".
           RECOVERY_FRAGMENT_GZ="$OUT/obj/PACKAGING/vendor_ramdisk_fragments_intermediates/recovery.cpio.gz"
-          PLATFORM_FRAGMENT=device/motorola/kansas/prebuilt/vendor_ramdisk_platform.lz4
+          STOCK_PLATFORM_LZ4=device/motorola/kansas/prebuilt/vendor_ramdisk_platform.lz4
           DTB=device/motorola/kansas/prebuilt/vendor_boot.dtb
-          ls -la "$RECOVERY_FRAGMENT_GZ" "$PLATFORM_FRAGMENT" "$DTB"
-          # Run 37's image was structurally perfect (correct 2-entry table,
-          # real content in both fragments, right cmdline/DTB/permissions)
-          # yet the device STILL fell back to the stock "No command"
-          # recovery. Side-by-side magiskboot unpack of run 37's image vs
-          # the one third-party build proven to boot a recovery UI on this
-          # exact device (Hovatek's) found exactly three differences, one
-          # decisive: Hovatek's recovery fragment is lz4_legacy while ours
-          # was gzip (AOSP's intermediate is a .cpio.gz). EVERYTHING this
-          # device ever feeds its kernel is lz4_legacy (Image.lz4,
-          # init_boot's ramdisk, stock vendor_boot's ramdisk, both Hovatek
-          # fragments) - MediaTek kernels are commonly built with only LZ4
-          # initramfs decompression (CONFIG_RD_GZIP trimmed), and that
-          # single assumption explains every prior on-device result: run 35
-          # (empty platform + gzip recovery = kernel can unpack nothing ->
-          # instant panic loop) and run 37 (lz4 platform + gzip recovery =
-          # platform content boots, recovery fragment silently unreadable ->
-          # stock "No command"). Recompress the recovery fragment as
-          # lz4_legacy (lz4 -l). The other two deltas from the working
-          # image are matched too: "buildvariant=eng" appended to the
-          # cmdline, and NO avbtool hash footer (Hovatek's working image
-          # has none; AVB verification is disabled on the target unit, and
-          # converging on the known-good configuration exactly beats
-          # keeping a cosmetic footer nothing validates).
-          RECOVERY_FRAGMENT="$OUT/recovery_fragment.cpio.lz4"
+          ls -la "$RECOVERY_FRAGMENT_GZ" "$STOCK_PLATFORM_LZ4" "$DTB"
           LZ4=prebuilts/build-tools/linux-x86/bin/lz4
           [ -x "$LZ4" ] || LZ4=$(command -v lz4)
           echo "Using lz4 at: $LZ4"
-          gunzip -c "$RECOVERY_FRAGMENT_GZ" | "$LZ4" -l -9 > "$RECOVERY_FRAGMENT"
-          ls -la "$RECOVERY_FRAGMENT"
-          python3 -c "d=open('$RECOVERY_FRAGMENT','rb').read(4); assert d==bytes.fromhex('02214c18'), f'not lz4_legacy magic: {d.hex()}'; print('lz4_legacy magic OK')"
+
+          # === Why this step is shaped like this (runs 35-38 history) ===
+          # Every device feed on this MediaTek unit is lz4_legacy (Image.lz4,
+          # init_boot/vendor_boot stock ramdisks) - its kernel appears built
+          # with only LZ4 initramfs decompression, so BOTH fragments must be
+          # lz4_legacy (run 37's gzip recovery fragment was silently
+          # unreadable -> stock "No command"). Runs match the three fields
+          # that differed from the one third-party build proven to boot a
+          # recovery UI on this exact device (Hovatek's): lz4_legacy
+          # fragments, "buildvariant=eng" appended to cmdline, and NO avbtool
+          # footer.
+          #
+          # Run 38 got all three right and STILL hung on the splash screen.
+          # Unpacking Hovatek's working image vs run 38 side by side found
+          # the real structural cause: the 195 vendor kernel modules
+          # (lib/modules/*.ko - touch, display, storage drivers) must live
+          # INSIDE the recovery fragment, bundled with the recovery content,
+          # exactly as Hovatek does. Run 38 (and every prior attempt) put the
+          # modules in the PLATFORM fragment and left the recovery fragment
+          # OrangeFox-only - so OrangeFox's recovery came up with no hardware
+          # drivers and hung waiting for a display/touch/storage stack that
+          # never initialised. Hovatek's split, which we now replicate:
+          #   - recovery fragment = full stock platform ramdisk (modules +
+          #     first_stage + fstabs) MERGED with OrangeFox on top
+          #   - platform fragment = stock platform ramdisk with lib/modules
+          #     stripped out (keeps it small so the pair fits the 64MB
+          #     partition; its content is fully shadowed by the recovery
+          #     fragment in recovery mode anyway)
+          #
+          # The recovery merge is done by raw cpio-stream concatenation
+          # (stock.cpio then fox.cpio), NOT extract-and-repack: the kernel's
+          # initramfs loader natively processes concatenated cpio archives
+          # and lets later entries (OrangeFox) override earlier ones (stock),
+          # and streaming preserves every stored permission bit - critically
+          # the /sbin/* 0755 bits that TARGET_FS_CONFIG_GEN fixes upstream
+          # and that a non-root extract-and-repack in CI would silently drop.
+
+          STOCK_CPIO="$PWD/$OUT/stock_platform.cpio"
+          FOX_CPIO="$PWD/$OUT/fox_recovery.cpio"
+          "$LZ4" -d -f "$STOCK_PLATFORM_LZ4" "$STOCK_CPIO"
+          gunzip -c "$RECOVERY_FRAGMENT_GZ" > "$FOX_CPIO"
+          python3 -c "assert open('$STOCK_CPIO','rb').read(6)==b'070701', 'stock not newc cpio'; assert open('$FOX_CPIO','rb').read(6)==b'070701', 'fox not newc cpio'; print('both newc cpio OK')"
+
+          # recovery fragment: stock (with modules) + fox merged, lz4_legacy
+          RECOVERY_FRAGMENT="$OUT/recovery_fragment.cpio.lz4"
+          cat "$STOCK_CPIO" "$FOX_CPIO" | "$LZ4" -l -9 > "$RECOVERY_FRAGMENT"
+
+          # platform fragment: stock minus lib/modules, root-owned, lz4_legacy.
+          # Extraction here is fine - platform content is shadowed by the
+          # recovery fragment in recovery mode, and -R 0:0 restores root
+          # ownership while cpio -i preserves the original mode bits.
+          PLAT_DIR="$PWD/$OUT/platform_extract"
+          rm -rf "$PLAT_DIR"; mkdir -p "$PLAT_DIR"
+          ( cd "$PLAT_DIR" && cpio -idm --quiet < "$STOCK_CPIO" )
+          rm -rf "$PLAT_DIR/lib/modules"
+          PLATFORM_FRAGMENT="$OUT/platform_fragment.cpio.lz4"
+          ( cd "$PLAT_DIR" && find . | cpio -o -H newc -R 0:0 --quiet ) | "$LZ4" -l -9 > "$PLATFORM_FRAGMENT"
+
+          ls -la "$RECOVERY_FRAGMENT" "$PLATFORM_FRAGMENT"
+          python3 -c "
+          for f in ['$RECOVERY_FRAGMENT','$PLATFORM_FRAGMENT']:
+              d=open(f,'rb').read(4)
+              assert d==bytes.fromhex('02214c18'), f'{f} not lz4_legacy: {d.hex()}'
+          print('both fragments lz4_legacy magic OK')
+          "
           "$HOSTBIN/mkbootimg" \
             --header_version 4 \
             --base 0x00000000 \
@@ -405,6 +443,13 @@ jobs:
             --ramdisk_type recovery --ramdisk_name "recovery" --vendor_ramdisk_fragment "$RECOVERY_FRAGMENT" \
             --vendor_boot "$OUT/vendor_boot.img"
           ls -la "$OUT/vendor_boot.img"
+          # Guard against overflowing the 64MB (0x04000000) vendor_boot partition
+          python3 -c "
+          import os
+          sz=os.path.getsize('$OUT/vendor_boot.img'); lim=0x04000000
+          print(f'vendor_boot.img={sz} bytes, limit={lim}')
+          assert sz<=lim, f'vendor_boot.img exceeds partition size by {sz-lim} bytes'
+          "
 
       - name: Collect output artifact
         working-directory: /home/runner/fox_14.1
