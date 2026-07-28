@@ -8,7 +8,19 @@
 LOCAL_PATH := device/motorola/kansas
 
 PRODUCT_COPY_FILES += \
-    $(LOCAL_PATH)/recovery/root/init.recovery.kansas.rc:$(TARGET_COPY_OUT_RECOVERY)/root/init.recovery.kansas.rc
+    $(LOCAL_PATH)/recovery/root/init.recovery.kansas.rc:$(TARGET_COPY_OUT_RECOVERY)/root/init.recovery.kansas.rc \
+    $(LOCAL_PATH)/prebuilt/modules/sensors_class.ko:$(TARGET_COPY_OUT_RECOVERY)/root/lib/modules/sensors_class.ko \
+    $(LOCAL_PATH)/prebuilt/modules/touch_boost.ko:$(TARGET_COPY_OUT_RECOVERY)/root/lib/modules/touch_boost.ko \
+    $(LOCAL_PATH)/prebuilt/modules/mtk_ioctl_touch_boost.ko:$(TARGET_COPY_OUT_RECOVERY)/root/lib/modules/mtk_ioctl_touch_boost.ko \
+    $(LOCAL_PATH)/prebuilt/modules/focaltech_0flash_mmi_v3.ko:$(TARGET_COPY_OUT_RECOVERY)/root/lib/modules/focaltech_0flash_mmi_v3.ko \
+    $(LOCAL_PATH)/prebuilt/modules/nova_0flash_mmi_v3.ko:$(TARGET_COPY_OUT_RECOVERY)/root/lib/modules/nova_0flash_mmi_v3.ko \
+    $(LOCAL_PATH)/prebuilt/modules/modules.load.recovery:$(TARGET_COPY_OUT_RECOVERY)/root/lib/modules/modules.load.recovery \
+    $(LOCAL_PATH)/prebuilt/firmware/focaltech_ts_fw_boe_ft8057m.bin:$(TARGET_COPY_OUT_RECOVERY)/root/vendor/firmware/focaltech_ts_fw_boe_ft8057m.bin \
+    $(LOCAL_PATH)/prebuilt/firmware/focaltech_ts_fw_boe_ft8057s.bin:$(TARGET_COPY_OUT_RECOVERY)/root/vendor/firmware/focaltech_ts_fw_boe_ft8057s.bin \
+    $(LOCAL_PATH)/prebuilt/firmware/nt36528_novatek_ts_fw.bin:$(TARGET_COPY_OUT_RECOVERY)/root/vendor/firmware/nt36528_novatek_ts_fw.bin \
+    $(LOCAL_PATH)/prebuilt/firmware/nt36528_novatek_ts_mp.bin:$(TARGET_COPY_OUT_RECOVERY)/root/vendor/firmware/nt36528_novatek_ts_mp.bin \
+    $(LOCAL_PATH)/prebuilt/firmware/nt36528a_novatek_ts_fw.bin:$(TARGET_COPY_OUT_RECOVERY)/root/vendor/firmware/nt36528a_novatek_ts_fw.bin \
+    $(LOCAL_PATH)/prebuilt/firmware/nt36528a_novatek_ts_mp.bin:$(TARGET_COPY_OUT_RECOVERY)/root/vendor/firmware/nt36528a_novatek_ts_mp.bin
 
 # Recovery-side init/ueventd rc — only needed if the stock boot ramdisk
 # doesn't already carry an init.recovery.<board>.rc; delete the

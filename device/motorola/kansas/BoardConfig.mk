@@ -259,11 +259,29 @@ TW_THEME := portrait_hdpi
 TW_EXTRA_LANGUAGES := true
 TW_SCREEN_BLANK_ON_BOOT := true
 TW_INPUT_BLACKLIST := "hbtp_vm"
+# Let OrangeFox/TWRP load the requested touch stack from vendor_boot.
+# On GKI devices this is more reliable than relying on board-specific
+# init.rc insmod ordering, and it also enables HW-GUI fallback when
+# none of the requested touch modules bind successfully. Root-side
+# checks on the live device report NVTCapacitiveTouchScreen, so keep
+# the requested touch driver focused on the Novatek path.
+TW_LOAD_VENDOR_MODULES := "sensors_class.ko touch_boost.ko mtk_ioctl_touch_boost.ko nova_0flash_mmi_v3.ko"
+TW_LOAD_VENDOR_MODULES_EXCLUDE_GKI := true
+TW_LOAD_VENDOR_BOOT_MODULES := true
 TW_NO_BATT_PERCENT := false
 TW_USE_TOOLBOX := true
 RECOVERY_SDCARD_ON_DATA := true
 TARGET_RECOVERY_FSTAB := $(DEVICE_PATH)/recovery/root/etc/twrp.fstab
-TARGET_RECOVERY_PIXEL_FORMAT := "ABGR_8888"
+
+# Display / Graphics Fixes
+TARGET_SCREEN_WIDTH := 720
+# Live DRM mode on the stock system reports 720x1604 on card0-DSI-1.
+TARGET_SCREEN_HEIGHT := 1604
+# ABGR_8888 is a common source of garbled output on MTK fbdev/drm based
+# recoveries for this panel family. Start with the standard channel order.
+TARGET_RECOVERY_PIXEL_FORMAT := RGBA_8888
+RECOVERY_GRAPHICS_FORCE_SINGLE_BUFFER := true
+TW_GRAPHICS_ALLOW_DUAL_BLANK := true
 TARGET_RECOVERY_QCOM_RTC_FIX := false
 
 # No /cache entry exists in this device's by-name table — confirmed,
