@@ -1,0 +1,17 @@
+Placeholder so git tracks this directory and it exists on disk before
+OrangeFox_A14.sh's packaging step runs.
+
+Run 26's diagnostic dump confirmed out/target/product/kansas/root/system
+is a genuinely empty real directory - nothing (no PRODUCT_PACKAGES
+binaries, no AOSP-generated content) populates it under the
+'adbd vendorbootimage' build goal. recovery/root/etc is an *absolute*
+symlink (-> /system/etc, created by init.environ.rc's post-install
+step) - correct for how the phone resolves it at real boot time, but
+build-time scripts that write through it are actually targeting the CI
+runner's own real "/system/etc", which doesn't exist, so those writes
+silently fail. The fatal failure specifically targets
+recovery/root/system/etc/recovery.fstab directly (bypassing that
+symlink entirely), which needs recovery/root/system/etc/ to be a real,
+existing directory - this file's only job is making that true, via the
+"cp -rf device/motorola/kansas/recovery/root .../recovery/" step that
+merges this device tree's own recovery/root into the build output.

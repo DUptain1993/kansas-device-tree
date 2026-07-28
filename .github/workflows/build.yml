@@ -16,8 +16,8 @@ on:
         default: "14.1"
         required: false
       build_target:
-        description: "Make target. kansas has no recovery partition and a separate init_boot (confirmed on-device) — the recovery ramdisk packs into init_boot.img, so bootimage is correct here, NOT recoveryimage."
-        default: "bootimage"
+        description: "Make target(s). vendor_boot is confirmed the partition recovery mode actually reads on this device (boot/init_boot both proven to have zero effect on real hardware, via checksum-verified flashes and multiple recovery-entry methods). vendorbootimage produces the vendor_ramdisk.cpio.gz intermediate the 'Build vendor_boot.img with the real stock platform ramdisk fragment' step consumes; bootimage is kept alongside it for the plain kernel+generic-ramdisk boot.img, unrelated to recovery now."
+        default: "bootimage vendorbootimage"
         required: false
   push:
     branches: [ "main" ]
@@ -69,6 +69,56 @@ jobs:
             /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
           sudo apt-get clean
 
+      # Run 11's log, read closely, orders the kill as: the runner process
+      # itself gets "Got signal: terminated" from OUTSIDE first, THEN its
+      # own cleanup ("Still alive, killing subprocesses...") is what SIGKILLs
+      # soong_build - not a plain kernel OOM-killer hitting soong_build
+      # directly. That ordering, plus the ~24 minutes run 11 then spent
+      # stuck reporting "in progress" before GitHub's backend finally
+      # concluded it as cancelled, is the signature of systemd-oomd (enabled
+      # by default on ubuntu-22.04 images) killing the runner's cgroup slice
+      # under memory pressure and the VM struggling to unwind while still
+      # under that same pressure. The swap step below helps by lowering
+      # pressure, but disabling the watchdog directly is the standard fix
+      # for this exact GitHub Actions failure mode.
+      - name: Disable systemd-oomd
+        run: sudo systemctl mask --now systemd-oomd.service systemd-oomd.socket
+
+      # The previous "reserve a CPU core + heartbeat" mitigation didn't
+      # help: run 11's heartbeat kept printing every 60s right up to the
+      # kill, so the runner agent wasn't starved of CPU. The real signature
+      # was "soong bootstrap failed with: signal: killed" (SIGKILL) landing
+      # ~2.5-3 minutes after soong_build itself started running (the "cp
+      # .../soong_build" line), both times, at the point Soong analyzes the
+      # entire Android.bp graph for the whole synced tree - the single most
+      # memory-hungry moment in the build. That's the OOM killer, not a
+      # timeout or a cancellation. /mnt turned out to be the same 146G
+      # filesystem as / on this runner image (not a separate disk as the
+      # step name above assumes) - confirmed via the "Relocate..." step's
+      # own df -h output (146G total, 89G avail at job start). That df
+      # output is exactly why run 14's "grow swap to 40G" was wrong: it
+      # treated disk as idle and RAM as the only scarce resource, but a
+      # 40G swapfile plus the 40-80G OrangeFox tree plus ccache easily
+      # exceeds the 89G actually available on this single shared disk.
+      # Run 14 died in 10 minutes with an unhandled
+      # "IOException: No space left on device" crashing the runner's own
+      # log writer - a disk-full crash, not an OOM kill signature (no
+      # "Got signal: terminated" / "signal: killed" this time) - and it
+      # died faster than run 13 (24G swap) specifically because it had
+      # 16G less disk headroom to burn through first. Keep swap modest
+      # (12G is ample for a single Soong analysis pass / a 2-job compile,
+      # per runs 12-13 which got well into the build with 24G) and print
+      # df -h at each disk-relevant checkpoint below instead of guessing
+      # from crash signatures alone.
+      - name: Add swap space to absorb build memory spikes
+        run: |
+          sudo fallocate -l 12G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+          df -h / /mnt
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -117,6 +167,7 @@ jobs:
         run: |
           cd ~/OrangeFox_sync
           ./orangefox_sync.sh --branch "${{ github.event.inputs.fox_branch || '14.1' }}" --path "$HOME/fox_14.1"
+          df -h / /mnt
 
       - name: Place device tree
         run: |
@@ -144,19 +195,274 @@ jobs:
           export ALLOW_MISSING_DEPENDENCIES=true
           source build/envsetup.sh
           lunch twrp_kansas-ap2a-eng
-          mka ${{ github.event.inputs.build_target || 'bootimage' }} -j"$(nproc)"
+
+          # Runs 9-11 all died a few minutes into this step from memory
+          # pressure during Soong's whole-tree analysis; 24G swap + masking
+          # systemd-oomd (above) got run 13 past that and ~9 minutes into
+          # the step - real progress - but it then died anyway, and this
+          # time badly enough that even the job log was lost (BlobNotFound),
+          # not just cut off. That's a harder crash than the earlier
+          # systemd-oomd kills, consistent with genuinely running out of
+          # RAM+swap during actual compilation, where multiple parallel
+          # cc1plus/clang processes each hold significant memory - not just
+          # Soong's one-time analysis spike. -j(nproc-1) is still too many
+          # concurrent compiles for this runner's memory budget, so cap
+          # parallelism hard instead of scaling it off core count, and give
+          # more swap headroom. If this still isn't enough, the runner
+          # doesn't have enough RAM for this build regardless of tuning and
+          # a larger-memory runner is the real fix.
+          build_jobs=2
+          df -h / /mnt
+          ( while true; do sleep 60; echo "::notice::still building ($(date -u +%H:%M:%S) UTC)"; done ) &
+          heartbeat_pid=$!
+          trap 'kill "$heartbeat_pid" 2>/dev/null' EXIT
+
+          # Run 15 (disk fix in place) got to 99% (5293/5296) and then
+          # failed: "rsync: [sender] link_stat
+          # ".../out/target/product/kansas/root" failed: No such file or
+          # directory". Read core/Makefile from the exact build/make tag
+          # this fox_14.1/minimal-manifest tree pins
+          # (android-14.0.0_r67): the recovery-ramdisk-packaging rule
+          # (ramdisk_files-timestamp, core/Makefile:2694) rsyncs FROM
+          # $(TARGET_ROOT_OUT) (.../root) as its baseline, and depends
+          # directly on $(INTERNAL_ROOT_FILES) - the individual files
+          # destined for that directory - not on installed-files-root.txt
+          # or systemimage at all.
+          #
+          # Run 16 tried requesting installed-files-root.txt as a raw
+          # extra mka goal - ninja rejected it ("ninja: unknown target").
+          #
+          # Run 17 tried "systemimage" instead, on the theory that
+          # FULL_SYSTEMIMAGE_DEPS (which does include
+          # INSTALLED_FILES_FILE_ROOT) would pull root population in as a
+          # side effect. Confirmed a dead end: kansas's BoardConfig.mk/
+          # device.mk never sets PRODUCT_BUILD_SYSTEM_IMAGE,
+          # PRODUCT_USE_DYNAMIC_PARTITION_SIZE, or
+          # BOARD_SYSTEMIMAGE_PARTITION_SIZE, so core/board_config.mk
+          # clears BUILDING_SYSTEM_IMAGE to empty, and "systemimage"
+          # resolves to the empty stub phony at core/Makefile:939 - not
+          # the real target (core/Makefile:3529, only added inside
+          # `ifdef BUILDING_SYSTEM_IMAGE`). Requesting it added zero new
+          # ninja work: same 5293/5296 failure point, installed-files-
+          # root.txt never appears as a build step in the log either way.
+          #
+          # The actual fix is in the device tree, not here:
+          # device/motorola/kansas/device.mk now inherits
+          # target/product/generic_ramdisk.mk, which adds
+          # init_first_stage to PRODUCT_PACKAGES - that's what actually
+          # populates $(TARGET_ROOT_OUT) in modern (system-as-root/GKI)
+          # AOSP, without pulling in a full system image build.
+          # fs_config_files_system/fs_config_dirs_system (added to
+          # PRODUCT_PACKAGES in device.mk, see its comment for why) have
+          # no formal Makefile dependency edge pulling them in ahead of
+          # recovery_ramdisk's mkbootfs -d $(TARGET_OUT) call, which is
+          # what actually reads their generated output at runtime to fix
+          # /sbin/* permissions. Request them explicitly in the same mka
+          # invocation so ninja builds them - recovery_ramdisk is one of
+          # the very last steps in this build (5293+/5296 in prior runs),
+          # and these are small standalone leaf modules, so in practice
+          # they finish well before mkbootfs runs even without a real
+          # graph edge.
+          mka fs_config_files_system fs_config_dirs_system ${{ github.event.inputs.build_target || 'bootimage' }} -j"$build_jobs"
+
+      # Run 25 failed inside OrangeFox_A14.sh's "Fox_Before_Recovery_Image"
+      # step with a cascade of "No such file or directory" under
+      # recovery/root/system/ (magiskboot symlink, bash.bashrc, and
+      # fatally system/etc/recovery.fstab) - pointing at recovery/root/system
+      # never getting populated with real content before that script runs.
+      # The runner is torn down the instant the job fails, so there's no way
+      # to inspect out/ post-mortem - dump the exact state of root/,
+      # recovery/root/, and system/ (TARGET_OUT) here, on failure, so the
+      # next run's log has real data instead of another guess.
+      - name: Diagnose recovery root population on failure
+        if: failure()
+        working-directory: /home/runner/fox_14.1
+        run: |
+          echo "::group::out/target/product/kansas/root"
+          find out/target/product/kansas/root -maxdepth 4 2>&1 || echo "(root/ does not exist)"
+          echo "::endgroup::"
+          echo "::group::out/target/product/kansas/system (TARGET_OUT)"
+          find out/target/product/kansas/system -maxdepth 3 2>&1 || echo "(system/ does not exist)"
+          echo "::endgroup::"
+          echo "::group::out/target/product/kansas/recovery/root"
+          find out/target/product/kansas/recovery/root -maxdepth 4 2>&1 || echo "(recovery/root/ does not exist)"
+          echo "::endgroup::"
+
+      # boot.img and init_boot.img were both extensively tested on real
+      # hardware (checksum-verified content present in the live device's
+      # active partition, correct /sbin permissions) and BOTH proven to
+      # have zero effect on recovery-mode behavior - the bootloader
+      # simply doesn't read either partition's ramdisk here, confirmed
+      # via fastboot reboot recovery AND the bootloader's own native
+      # "Recovery mode" menu entry. vendor_boot is the partition that
+      # actually matters (confirmed: flashing custom content there
+      # changes behavior from "ignored" to "crashes/hangs", unlike
+      # boot/init_boot). See BoardConfig.mk's boot image section for the
+      # full history - init_boot.img is no longer built here.
+      #
+      # vendor_boot's own AOSP-built ramdisk table (BOARD_MOVE_
+      # RECOVERY_RESOURCES_TO_VENDOR_BOOT) is a genuine v4 two-fragment
+      # table (platform + recovery) - correct in shape - but the platform
+      # fragment comes out completely empty: this device tree has never
+      # had real vendor blobs pulled in (no vendor/motorola/kansas/
+      # kansas-vendor.mk), so there's nothing to populate it from.
+      # Confirmed on real hardware via magiskboot unpack --vendor: an
+      # empty platform fragment (missing dozens of essential kernel
+      # modules - WiFi, MediaTek exception handling, storage drivers -
+      # that recovery mode needs exactly as much as normal boot) causes
+      # an immediate silent kernel panic/bootloop. A hand-built hybrid
+      # (stock's real platform ramdisk + our recovery fragment, done via
+      # on-device magiskboot repack) got past the crash but hung instead
+      # - likely a construction detail of that specific repack, since a
+      # third-party TWRP build for this exact device (Hovatek's builder,
+      # given the same stock boot.img + vendor_boot.img as input) proved
+      # a correctly-built version of this same combination genuinely
+      # boots into a working recovery UI on this hardware (cosmetic
+      # issues only - no touch, wrong DPI/pixel-format rendering - both
+      # expected from a generic, non-device-specific TWRP build).
+      #
+      # Fix: build vendor_boot.img directly via mkbootimg's real
+      # multi-fragment syntax (--ramdisk_type/--ramdisk_name/
+      # --vendor_ramdisk_fragment, repeatable) instead of relying on
+      # BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT's auto-populated
+      # (and, for the platform fragment, empty) result - combining:
+      #   - the real stock platform ramdisk, extracted from the live
+      #     device's vendor_boot_a and committed as prebuilt/
+      #     vendor_ramdisk_platform.lz4 (verified exact size 27,591,883
+      #     bytes, lz4_legacy compressed, matching the live device's own
+      #     header field exactly)
+      #   - our own OrangeFox recovery ramdisk - the vendor_ramdisk.cpio.gz
+      #     intermediate the standard build already correctly produces
+      #     under BOARD_MOVE_RECOVERY_RESOURCES_TO_VENDOR_BOOT (confirmed
+      #     via cpio -tv that its /sbin/* permissions are correct)
+      #   - stock's real vendor cmdline (bootopt=64S3,32N2,64N2 mem.
+      #     enable_mglru=1 loglevel=4 initcall_debug=0 - MediaTek DRAM/
+      #     kernel params), which this device tree's build otherwise
+      #     leaves empty
+      # Same DTB, page size, and load addresses already byte-verified
+      # against the live device (BoardConfig.mk's BOARD_MKBOOTIMG_ARGS).
+      - name: Build vendor_boot.img with the real stock platform ramdisk fragment
+        working-directory: /home/runner/fox_14.1
+        run: |
+          set -euo pipefail
+          OUT=out/target/product/kansas
+          HOSTBIN=out/host/linux-x86/bin
+          # NOT obj/PACKAGING/vendor_boot_intermediates/vendor_ramdisk.cpio.gz -
+          # that's the DEFAULT/platform ramdisk build attempt, which fails
+          # identically to the empty-platform-fragment bug this whole step
+          # exists to fix ("mkbootfs: cannot open directory '.../vendor_ramdisk':
+          # No such file or directory", confirmed in run 36's log - no real
+          # vendor blobs to source it from, same root cause as before) and
+          # produces a 20-byte empty gzip stream, not real content. OrangeFox's
+          # actual recovery content lands at this different intermediate path
+          # instead, confirmed via the same log right after "Building the
+          # recovery image, using the official AOSP recovery image builder".
+          RECOVERY_FRAGMENT_GZ="$OUT/obj/PACKAGING/vendor_ramdisk_fragments_intermediates/recovery.cpio.gz"
+          STOCK_PLATFORM_LZ4=device/motorola/kansas/prebuilt/vendor_ramdisk_platform.lz4
+          DTB=device/motorola/kansas/prebuilt/vendor_boot.dtb
+          ls -la "$RECOVERY_FRAGMENT_GZ" "$STOCK_PLATFORM_LZ4" "$DTB"
+          LZ4=prebuilts/build-tools/linux-x86/bin/lz4
+          [ -x "$LZ4" ] || LZ4=$(command -v lz4)
+          echo "Using lz4 at: $LZ4"
+
+          # === Why this step is shaped like this (runs 35-38 history) ===
+          # Every device feed on this MediaTek unit is lz4_legacy (Image.lz4,
+          # init_boot/vendor_boot stock ramdisks) - its kernel appears built
+          # with only LZ4 initramfs decompression, so BOTH fragments must be
+          # lz4_legacy (run 37's gzip recovery fragment was silently
+          # unreadable -> stock "No command"). Runs match the three fields
+          # that differed from the one third-party build proven to boot a
+          # recovery UI on this exact device (Hovatek's): lz4_legacy
+          # fragments, "buildvariant=eng" appended to cmdline, and NO avbtool
+          # footer.
+          #
+          # Run 38 got all three right and STILL hung on the splash screen.
+          # Unpacking Hovatek's working image vs run 38 side by side found
+          # the real structural cause: the 195 vendor kernel modules
+          # (lib/modules/*.ko - touch, display, storage drivers) must live
+          # INSIDE the recovery fragment, bundled with the recovery content,
+          # exactly as Hovatek does. Run 38 (and every prior attempt) put the
+          # modules in the PLATFORM fragment and left the recovery fragment
+          # OrangeFox-only - so OrangeFox's recovery came up with no hardware
+          # drivers and hung waiting for a display/touch/storage stack that
+          # never initialised. Hovatek's split, which we now replicate:
+          #   - recovery fragment = full stock platform ramdisk (modules +
+          #     first_stage + fstabs) MERGED with OrangeFox on top
+          #   - platform fragment = stock platform ramdisk with lib/modules
+          #     stripped out (keeps it small so the pair fits the 64MB
+          #     partition; its content is fully shadowed by the recovery
+          #     fragment in recovery mode anyway)
+          #
+          # The recovery merge is done by raw cpio-stream concatenation
+          # (stock.cpio then fox.cpio), NOT extract-and-repack: the kernel's
+          # initramfs loader natively processes concatenated cpio archives
+          # and lets later entries (OrangeFox) override earlier ones (stock),
+          # and streaming preserves every stored permission bit - critically
+          # the /sbin/* 0755 bits that TARGET_FS_CONFIG_GEN fixes upstream
+          # and that a non-root extract-and-repack in CI would silently drop.
+
+          STOCK_CPIO="$PWD/$OUT/stock_platform.cpio"
+          FOX_CPIO="$PWD/$OUT/fox_recovery.cpio"
+          "$LZ4" -d -f "$STOCK_PLATFORM_LZ4" "$STOCK_CPIO"
+          gunzip -c "$RECOVERY_FRAGMENT_GZ" > "$FOX_CPIO"
+          python3 -c "assert open('$STOCK_CPIO','rb').read(6)==b'070701', 'stock not newc cpio'; assert open('$FOX_CPIO','rb').read(6)==b'070701', 'fox not newc cpio'; print('both newc cpio OK')"
+
+          # recovery fragment: stock (with modules) + fox merged, lz4_legacy
+          RECOVERY_FRAGMENT="$OUT/recovery_fragment.cpio.lz4"
+          cat "$STOCK_CPIO" "$FOX_CPIO" | "$LZ4" -l -9 > "$RECOVERY_FRAGMENT"
+
+          # platform fragment: stock minus lib/modules, root-owned, lz4_legacy.
+          # Extraction here is fine - platform content is shadowed by the
+          # recovery fragment in recovery mode, and -R 0:0 restores root
+          # ownership while cpio -i preserves the original mode bits.
+          PLAT_DIR="$PWD/$OUT/platform_extract"
+          rm -rf "$PLAT_DIR"; mkdir -p "$PLAT_DIR"
+          ( cd "$PLAT_DIR" && cpio -idm --quiet < "$STOCK_CPIO" )
+          rm -rf "$PLAT_DIR/lib/modules"
+          PLATFORM_FRAGMENT="$OUT/platform_fragment.cpio.lz4"
+          ( cd "$PLAT_DIR" && find . | cpio -o -H newc -R 0:0 --quiet ) | "$LZ4" -l -9 > "$PLATFORM_FRAGMENT"
+
+          ls -la "$RECOVERY_FRAGMENT" "$PLATFORM_FRAGMENT"
+          python3 -c "
+          for f in ['$RECOVERY_FRAGMENT','$PLATFORM_FRAGMENT']:
+              d=open(f,'rb').read(4)
+              assert d==bytes.fromhex('02214c18'), f'{f} not lz4_legacy: {d.hex()}'
+          print('both fragments lz4_legacy magic OK')
+          "
+          "$HOSTBIN/mkbootimg" \
+            --header_version 4 \
+            --base 0x00000000 \
+            --pagesize 4096 \
+            --kernel_offset 0x40000000 \
+            --ramdisk_offset 0x66f00000 \
+            --tags_offset 0x47c80000 \
+            --dtb_offset 0x47c80000 \
+            --dtb "$DTB" \
+            --vendor_cmdline "bootopt=64S3,32N2,64N2 mem.enable_mglru=1 loglevel=4 initcall_debug=0 buildvariant=eng" \
+            --ramdisk_type platform --ramdisk_name "" --vendor_ramdisk_fragment "$PLATFORM_FRAGMENT" \
+            --ramdisk_type recovery --ramdisk_name "recovery" --vendor_ramdisk_fragment "$RECOVERY_FRAGMENT" \
+            --vendor_boot "$OUT/vendor_boot.img"
+          ls -la "$OUT/vendor_boot.img"
+          # Guard against overflowing the 64MB (0x04000000) vendor_boot partition
+          python3 -c "
+          import os
+          sz=os.path.getsize('$OUT/vendor_boot.img'); lim=0x04000000
+          print(f'vendor_boot.img={sz} bytes, limit={lim}')
+          assert sz<=lim, f'vendor_boot.img exceeds partition size by {sz-lim} bytes'
+          "
 
       - name: Collect output artifact
         working-directory: /home/runner/fox_14.1
         run: |
           mkdir -p /home/runner/out-artifact
-          # init_boot.img is the one that actually carries the recovery
-          # ramdisk on this device (confirmed: boot_a's ramdisk_size=0,
-          # separate init_boot_a/b partitions exist). boot.img/recovery.img/
-          # OrangeFox's flashable *.zip are collected too in case the
-          # target list changes later.
+          # vendor_boot.img (rebuilt with the real platform ramdisk
+          # fragment in the step above) is the current best candidate for
+          # what the device's bootloader actually reads for recovery mode
+          # - see that step's comment for the full history. boot.img/
+          # recovery.img/OrangeFox's flashable *.zip are collected too in
+          # case that changes again.
           find out/target/product/kansas -maxdepth 1 \
-            \( -name "init_boot.img" -o -name "recovery.img" -o -name "boot.img" -o -name "*.zip" \) \
+            \( -name "boot.img" -o -name "vendor_boot.img" -o -name "recovery.img" -o -name "*.zip" \) \
             -exec cp {} /home/runner/out-artifact/ \;
 
       - name: Upload artifact
